@@ -2,13 +2,12 @@
 <html>
 
 <head>
-  <title>Read a Webpage Aloud</title>
+  <title>Streaming TTS Reader</title>
 </head>
 
 <body>
-  <h2>Read Website Aloud</h2>
+  <h2>Streaming Read Website Aloud</h2>
   <input type="text" id="url" placeholder="Enter article URL" size="50" />
-
   <select id="voice">
     <option value="shimmer">Shimmer (Sky)</option>
     <option value="onyx">Onyx (Ember)</option>
@@ -16,71 +15,91 @@
     <option value="echo">Echo (Breeze)</option>
     <option value="fable">Fable (Juniper)</option>
   </select>
-
-  <button id="readBtn" onclick="readAloud()">Read</button>
-
+  <button id="readBtn">Read</button>
   <br /><br />
-
   <audio id="player" controls></audio>
 
   <script>
-    async function readAloud() {
-      const readBtn = document.getElementById("readBtn");
-      const urlInput = document.getElementById("url");
-      const voiceSelect = document.getElementById("voice");
-      const player = document.getElementById("player");
+    const readBtn = document.getElementById("readBtn");
+    const urlInput = document.getElementById("url");
+    const voiceSelect = document.getElementById("voice");
+    const player = document.getElementById("player");
 
-      const url = urlInput.value.trim();
-      if (!url) {
+    let audioQueue = [];
+    let isPlaying = false;
+    let eventSource = null;
+
+    readBtn.onclick = () => {
+      const articleUrl = urlInput.value.trim();
+      const selectedVoice = voiceSelect.value;
+
+      if (!articleUrl) {
         alert("Please enter a URL");
         return;
       }
 
+      audioQueue = [];
+      isPlaying = false;
+      player.src = "";
+
       readBtn.disabled = true;
       readBtn.textContent = "Loading...";
 
-      try {
-        const response = await fetch("/read-url", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            url: url,
-            voice: voiceSelect.value
-          }),
-        });
+      // Construct stream-read URL with query parameters
+      const streamUrl = new URL("/stream-read", window.location.origin);
+      streamUrl.searchParams.set("url", articleUrl);
+      streamUrl.searchParams.set("voice", selectedVoice);
 
-        const data = await response.json();
+      eventSource = new EventSource(streamUrl);
 
-        if (data.error) {
-          alert("Error: " + data.error);
-          readBtn.disabled = false;
-          readBtn.textContent = "Read";
-          return;
-        }
+      eventSource.onopen = () => {
+        console.log("Streaming connection opened");
+      };
 
-        const audioChunks = data.audioChunks;
-        let currentIndex = 0;
-
-        function playNext() {
-          if (currentIndex < audioChunks.length) {
-            player.src = audioChunks[currentIndex];
-            player.play();
-            currentIndex++;
-          } else {
-            readBtn.disabled = false;
-            readBtn.textContent = "Read";
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.audioUrl) {
+          audioQueue.push(data.audioUrl);
+          if (!isPlaying) {
+            playNext();
           }
         }
+      };
 
-        player.onended = playNext;
-        playNext();
-
-      } catch (err) {
-        alert("Error: " + err.message);
+      eventSource.addEventListener("end", () => {
+        console.log("Streaming ended");
+        eventSource.close();
         readBtn.disabled = false;
         readBtn.textContent = "Read";
+      });
+
+      eventSource.addEventListener("error", (event) => {
+        try {
+          const errorData = JSON.parse(event.data);
+          alert("Error: " + errorData.error);
+        } catch {
+          alert("A streaming error occurred");
+        }
+        eventSource.close();
+        readBtn.disabled = false;
+        readBtn.textContent = "Read";
+      });
+
+      function playNext() {
+        if (audioQueue.length === 0) {
+          isPlaying = false;
+          return;
+        }
+        isPlaying = true;
+        const nextAudio = audioQueue.shift();
+        player.src = nextAudio;
+        player.play();
       }
-    }
+
+      player.onended = () => {
+        playNext();
+      };
+    };
   </script>
 </body>
 
