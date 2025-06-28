@@ -6,3 +6,5 @@ requests
 python-dotenv
 flask-cors
 pydub
+lxml
+lxml_html_clean
