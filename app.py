@@ -15,15 +15,13 @@ app = Flask(__name__)
 CORS(app)  # allow cross-origin if frontend is hosted separately
 
 
-def load_secrets(path="secrets.yml"):
-    with open(path, "r") as file:
-        secrets = yaml.safe_load(file)
-    return secrets
-
-
-secrets = load_secrets()
-
-openai.api_key = secrets["api-keys"]["open-api"]
+# def load_secrets(path="secrets.yml"):
+#     with open(path, "r") as file:
+#         secrets = yaml.safe_load(file)
+#     return secrets
+# secrets = load_secrets()
+# openai.api_key = secrets["api-keys"]["open-api"]
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 
 @app.route("/")
