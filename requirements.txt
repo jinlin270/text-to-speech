@@ -4,3 +4,4 @@ newspaper3k
 requests
 python-dotenv
 flask-cors
+pydub

@@ -3,6 +3,29 @@
 
 <head>
   <title>Streaming TTS Reader</title>
+  <style>
+    #progressContainer {
+      width: 80%;
+      height: 20px;
+      background: #ddd;
+      border-radius: 10px;
+      margin: 10px 0;
+      overflow: hidden;
+    }
+
+    #progressBar {
+      height: 100%;
+      width: 0%;
+      background: #4caf50;
+      border-radius: 10px;
+      transition: width 0.2s;
+    }
+
+    #timeDisplay {
+      font-family: monospace;
+      margin-top: 5px;
+    }
+  </style>
 </head>
 
 <body>
@@ -17,17 +40,30 @@
   </select>
   <button id="readBtn">Read</button>
   <br /><br />
+
   <audio id="player" controls></audio>
+
+  <div id="progressContainer">
+    <div id="progressBar"></div>
+  </div>
+  <div id="timeDisplay">Elapsed: 0:00 / Total: 0:00</div>
 
   <script>
     const readBtn = document.getElementById("readBtn");
     const urlInput = document.getElementById("url");
     const voiceSelect = document.getElementById("voice");
     const player = document.getElementById("player");
+    const progressBar = document.getElementById("progressBar");
+    const timeDisplay = document.getElementById("timeDisplay");
 
-    let audioQueue = [];
+    let audioQueue = []; // Array of objects: { url, duration }
     let isPlaying = false;
     let eventSource = null;
+
+    // Durations in seconds
+    let playedDuration = 0;
+    let bufferedDuration = 0;
+    let currentChunkDuration = 0;
 
     readBtn.onclick = () => {
       const articleUrl = urlInput.value.trim();
@@ -38,14 +74,19 @@
         return;
       }
 
+      // Reset state
       audioQueue = [];
       isPlaying = false;
+      playedDuration = 0;
+      bufferedDuration = 0;
+      currentChunkDuration = 0;
       player.src = "";
+      updateDisplay();
 
       readBtn.disabled = true;
       readBtn.textContent = "Loading...";
 
-      // Construct stream-read URL with query parameters
+      // Build streaming URL with query params
       const streamUrl = new URL("/stream-read", window.location.origin);
       streamUrl.searchParams.set("url", articleUrl);
       streamUrl.searchParams.set("voice", selectedVoice);
@@ -59,10 +100,12 @@
       eventSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.audioUrl) {
-          audioQueue.push(data.audioUrl);
+          audioQueue.push({ url: data.audioUrl, duration: data.chunkDuration });
+          bufferedDuration += data.chunkDuration;
           if (!isPlaying) {
             playNext();
           }
+          updateDisplay();
         }
       };
 
@@ -88,17 +131,47 @@
       function playNext() {
         if (audioQueue.length === 0) {
           isPlaying = false;
+          updateDisplay();
           return;
         }
         isPlaying = true;
-        const nextAudio = audioQueue.shift();
-        player.src = nextAudio;
+        const next = audioQueue.shift();
+        player.src = next.url;
+        currentChunkDuration = next.duration;
+        bufferedDuration -= next.duration;
         player.play();
+        updateDisplay();
       }
 
+      player.ontimeupdate = () => {
+        updateDisplay();
+      };
+
       player.onended = () => {
+        playedDuration += currentChunkDuration;
+        currentChunkDuration = 0;
+        updateDisplay();
         playNext();
       };
+
+      function updateDisplay() {
+        const currentTime = player.currentTime || 0;
+        const elapsed = playedDuration + currentTime;
+        const total = playedDuration + currentChunkDuration + bufferedDuration;
+
+        // Update progress bar width (percent)
+        let progressPercent = total > 0 ? (elapsed / total) * 100 : 0;
+        progressBar.style.width = progressPercent + "%";
+
+        // Format time helper
+        function formatTime(seconds) {
+          const mins = Math.floor(seconds / 60);
+          const secs = Math.floor(seconds % 60);
+          return `${mins}:${secs.toString().padStart(2, "0")}`;
+        }
+
+        timeDisplay.textContent = `Elapsed: ${formatTime(elapsed)} / Total: ${formatTime(total)}`;
+      }
     };
   </script>
 </body>

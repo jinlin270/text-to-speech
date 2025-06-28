@@ -7,7 +7,7 @@ import uuid
 from io import BytesIO
 import os
 import yaml
-
+from pydub import AudioSegment
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -49,50 +49,12 @@ def chunk_text(text, max_chars=500):
     return chunks
 
 
-# @app.route("/read-url", methods=["POST"])
-# def read_url():
-#     data = request.json
-#     url = data.get("url")
-#     voice = data.get("voice", "shimmer")  # default to shimmer if not specified
-
-#     if not url:
-#         return jsonify({"error": "No URL provided"}), 400
-
-#     # Validate voice input (optional but recommended)
-#     allowed_voices = {"shimmer", "onyx", "nova", "echo", "fable"}
-#     if voice not in allowed_voices:
-#         return (
-#             jsonify(
-#                 {
-#                     "error": f"Invalid voice '{voice}'. Allowed voices: {', '.join(allowed_voices)}"
-#                 }
-#             ),
-#             400,
-#         )
-
-#     try:
-#         article = Article(url)
-#         article.download()
-#         article.parse()
-#         text = article.text
-
-#         chunks = chunk_text(text)  # Make sure chunk_text is defined somewhere
-
-#         audio_urls = []
-#         for idx, chunk in enumerate(chunks):
-#             response = openai.audio.speech.create(
-#                 model="tts-1", voice=voice, input=chunk
-#             )
-#             audio_data = BytesIO(response.content)
-#             filename = f"chunk_{uuid.uuid4().hex}.mp3"
-#             with open(f"static/{filename}", "wb") as f:
-#                 f.write(audio_data.read())
-#             audio_urls.append(f"/static/{filename}")
-
-#         return jsonify({"audioChunks": audio_urls})
-
-#     except Exception as e:
-#         return jsonify({"error": str(e)}), 500
+def combine_audio_chunks(chunk_files, output_path):
+    combined = AudioSegment.empty()
+    for file in chunk_files:
+        audio_segment = AudioSegment.from_file(file, format="mp3")
+        combined += audio_segment
+    combined.export(output_path, format="mp3")
 
 
 @app.route("/stream-read", methods=["GET"])
@@ -108,6 +70,7 @@ def stream_read():
         return Response("No URL provided", status=400)
 
     def generate(voice):
+        chunk_files = []
         try:
             print("[DEBUG] Starting article parsing...")
             article = Article(url)
@@ -132,16 +95,31 @@ def stream_read():
                     model="tts-1", voice=voice, input=chunk
                 )
                 print("[DEBUG] TTS request complete, saving audio...")
+                audio_bytes = response.content
+                audio_segment = AudioSegment.from_file(
+                    BytesIO(audio_bytes), format="mp3"
+                )
+                duration_sec = audio_segment.duration_seconds
 
                 # Save audio to file
                 filename = f"static/chunk_{uuid.uuid4().hex}.mp3"
                 with open(filename, "wb") as f:
                     f.write(response.content)
 
+                chunk_files.append(filename)
+                total_duration_so_far = sum(
+                    AudioSegment.from_file(f, format="mp3").duration_seconds
+                    for f in chunk_files
+                )
+
                 print(f"[DEBUG] Audio saved as {filename}")
 
                 # Send audio chunk URL to frontend
-                data = {"audioUrl": "/" + filename}
+                data = {
+                    "audioUrl": "/" + filename,
+                    "chunkDuration": duration_sec,
+                    "totalDuration": total_duration_so_far,
+                }
                 yield f"data: {json.dumps(data)}\n\n"
 
                 # Short delay to pace the stream
