@@ -4,49 +4,251 @@
 <head>
   <title>Streaming TTS Reader</title>
   <style>
-    #progressContainer {
-      width: 80%;
-      height: 20px;
-      background: #ddd;
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+
+    .container {
+      background: white;
+      padding: 30px;
       border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    }
+
+    h2 {
+      color: #333;
+      text-align: center;
+      margin-bottom: 30px;
+    }
+
+    .input-group {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      padding: 12px;
+      border: 2px solid #ddd;
+      border-radius: 5px;
+      font-size: 14px;
+      min-width: 300px;
+    }
+
+    select {
+      padding: 12px;
+      border: 2px solid #ddd;
+      border-radius: 5px;
+      font-size: 14px;
+      background: white;
+    }
+
+    button {
+      padding: 12px 24px;
+      background: #4caf50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: bold;
+    }
+
+    button:hover {
+      background: #45a049;
+    }
+
+    button:disabled {
+      background: #cccccc;
+      cursor: not-allowed;
+    }
+
+    .audio-container {
+      margin: 20px 0;
+    }
+
+    audio {
+      width: 100%;
       margin: 10px 0;
+    }
+
+    .navigation-controls {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 20px;
+      margin: 15px 0;
+    }
+
+    .nav-btn {
+      background: #2196F3;
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      font-size: 20px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.3s;
+    }
+
+    .nav-btn:hover {
+      background: #1976D2;
+    }
+
+    .nav-btn:disabled {
+      background: #cccccc;
+      cursor: not-allowed;
+    }
+
+    .chunk-indicator {
+      font-size: 16px;
+      font-weight: bold;
+      color: #333;
+      min-width: 120px;
+      text-align: center;
+    }
+
+    #progressContainer {
+      width: 100%;
+      height: 8px;
+      background: #ddd;
+      border-radius: 4px;
+      margin: 15px 0;
       overflow: hidden;
+      position: relative;
     }
 
     #progressBar {
       height: 100%;
       width: 0%;
-      background: #4caf50;
-      border-radius: 10px;
-      transition: width 0.2s;
+      background: linear-gradient(90deg, #4caf50, #45a049);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+
+    #bufferedBar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      width: 0%;
+      background: rgba(76, 175, 80, 0.3);
+      border-radius: 4px;
+      transition: width 0.3s ease;
     }
 
     #timeDisplay {
       font-family: monospace;
-      margin-top: 5px;
+      margin: 10px 0;
+      text-align: center;
+      color: #666;
+    }
+
+    .status {
+      text-align: center;
+      margin: 10px 0;
+      padding: 10px;
+      border-radius: 5px;
+      font-weight: bold;
+    }
+
+    .status.loading {
+      background: #e3f2fd;
+      color: #1976d2;
+    }
+
+    .status.playing {
+      background: #e8f5e8;
+      color: #2e7d32;
+    }
+
+    .status.complete {
+      background: #f3e5f5;
+      color: #7b1fa2;
+    }
+
+    .chunk-info {
+      text-align: center;
+      color: #666;
+      font-size: 14px;
+      margin: 10px 0;
+    }
+
+    .full-audio-container {
+      display: none;
+      margin-top: 20px;
+      padding: 20px;
+      background: #f8f9fa;
+      border-radius: 8px;
+      border: 2px solid #e9ecef;
+    }
+
+    .full-audio-container.show {
+      display: block;
+    }
+
+    .full-audio-title {
+      text-align: center;
+      color: #333;
+      font-size: 18px;
+      font-weight: bold;
+      margin-bottom: 15px;
     }
   </style>
 </head>
 
 <body>
-  <h2>Streaming Read Website Aloud</h2>
-  <input type="text" id="url" placeholder="Enter article URL" size="50" />
-  <select id="voice">
-    <option value="shimmer">Shimmer (Sky)</option>
-    <option value="onyx">Onyx (Ember)</option>
-    <option value="nova">Nova (Cove)</option>
-    <option value="echo">Echo (Breeze)</option>
-    <option value="fable">Fable (Juniper)</option>
-  </select>
-  <button id="readBtn">Read</button>
-  <br /><br />
+  <div class="container">
+    <h2>Streaming TTS Reader</h2>
 
-  <audio id="player" controls></audio>
+    <div class="input-group">
+      <input type="text" id="url" placeholder="Enter article URL" />
+      <select id="voice">
+        <option value="shimmer">Shimmer (Sky)</option>
+        <option value="onyx">Onyx (Ember)</option>
+        <option value="nova">Nova (Cove)</option>
+        <option value="echo">Echo (Breeze)</option>
+        <option value="fable">Fable (Juniper)</option>
+      </select>
+      <button id="readBtn">Read Article</button>
+    </div>
 
-  <div id="progressContainer">
-    <div id="progressBar"></div>
+    <div id="status" class="status" style="display: none;"></div>
+
+    <div class="audio-container">
+      <audio id="player" controls preload="metadata"></audio>
+
+      <div class="navigation-controls">
+        <button id="prevChunkBtn" class="nav-btn" disabled>←</button>
+        <div id="chunkIndicator" class="chunk-indicator">Chunk 0/0</div>
+        <button id="nextChunkBtn" class="nav-btn" disabled>→</button>
+      </div>
+
+      <div id="progressContainer">
+        <div id="bufferedBar"></div>
+        <div id="progressBar"></div>
+      </div>
+
+      <div id="timeDisplay">Ready to start</div>
+      <div id="chunkInfo" class="chunk-info"></div>
+    </div>
+
+    <div id="fullAudioContainer" class="full-audio-container">
+      <div class="full-audio-title">Complete Audio</div>
+      <audio id="fullAudioPlayer" controls></audio>
+    </div>
   </div>
-  <div id="timeDisplay">Elapsed: 0:00 / Total: 0:00</div>
 
   <script>
     const readBtn = document.getElementById("readBtn");
@@ -54,16 +256,26 @@
     const voiceSelect = document.getElementById("voice");
     const player = document.getElementById("player");
     const progressBar = document.getElementById("progressBar");
+    const bufferedBar = document.getElementById("bufferedBar");
     const timeDisplay = document.getElementById("timeDisplay");
+    const statusDiv = document.getElementById("status");
+    const chunkInfo = document.getElementById("chunkInfo");
+    const prevChunkBtn = document.getElementById("prevChunkBtn");
+    const nextChunkBtn = document.getElementById("nextChunkBtn");
+    const chunkIndicator = document.getElementById("chunkIndicator");
+    const fullAudioContainer = document.getElementById("fullAudioContainer");
+    const fullAudioPlayer = document.getElementById("fullAudioPlayer");
 
-    let audioQueue = []; // Array of objects: { url, duration }
-    let isPlaying = false;
     let eventSource = null;
-
-    // Durations in seconds
-    let playedDuration = 0;
-    let bufferedDuration = 0;
-    let currentChunkDuration = 0;
+    let currentSessionId = null;
+    let totalDuration = 0;
+    let isStreaming = false;
+    let audioQueue = []; // Array of audio chunks to play sequentially
+    let currentChunkIndex = 0;
+    let isPlaying = false;
+    let shouldAutoPlay = false;
+    let playedDuration = 0; // Total duration of completed chunks
+    let combinedAudioUrl = null; // URL for the complete audio when streaming ends
 
     readBtn.onclick = () => {
       const articleUrl = urlInput.value.trim();
@@ -75,13 +287,20 @@
       }
 
       // Reset state
+      isStreaming = false;
+      totalDuration = 0;
+      currentSessionId = null;
       audioQueue = [];
+      currentChunkIndex = 0;
       isPlaying = false;
+      shouldAutoPlay = false;
       playedDuration = 0;
-      bufferedDuration = 0;
-      currentChunkDuration = 0;
+      combinedAudioUrl = null;
       player.src = "";
+      fullAudioContainer.classList.remove("show");
       updateDisplay();
+      updateNavigationControls();
+      updateStatus("loading", "Loading article...");
 
       readBtn.disabled = true;
       readBtn.textContent = "Loading...";
@@ -95,17 +314,34 @@
 
       eventSource.onopen = () => {
         console.log("Streaming connection opened");
+        updateStatus("loading", "Processing article...");
       };
 
       eventSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
+
         if (data.audioUrl) {
-          audioQueue.push({ url: data.audioUrl, duration: data.chunkDuration });
-          bufferedDuration += data.chunkDuration;
-          if (!isPlaying) {
-            playNext();
+          // Add the new chunk to our queue
+          audioQueue.push({
+            url: data.audioUrl,
+            duration: data.chunkDuration,
+            chunkIndex: data.chunkIndex,
+            totalChunks: data.totalChunks
+          });
+
+          currentSessionId = data.sessionId;
+          isStreaming = true;
+          totalDuration = data.totalDuration;
+
+          // If this is the first chunk, start playing
+          if (audioQueue.length === 1) {
+            playCurrentChunk();
           }
+
           updateDisplay();
+          updateNavigationControls();
+          updateStatus("playing", `Processing chunk ${data.chunkIndex + 1} of ${data.totalChunks}`);
+          updateChunkInfo(data.chunkIndex + 1, data.totalChunks, data.chunkDuration);
         }
       };
 
@@ -113,7 +349,16 @@
         console.log("Streaming ended");
         eventSource.close();
         readBtn.disabled = false;
-        readBtn.textContent = "Read";
+        readBtn.textContent = "Read Article";
+        isStreaming = false;
+        updateStatus("complete", "Audio generation complete!");
+        updateChunkInfo();
+
+        // Create combined audio URL and show full audio player
+        if (audioQueue.length > 0) {
+          combinedAudioUrl = `/static/combined_${currentSessionId}.mp3`;
+          showFullAudio();
+        }
       });
 
       eventSource.addEventListener("error", (event) => {
@@ -125,54 +370,190 @@
         }
         eventSource.close();
         readBtn.disabled = false;
-        readBtn.textContent = "Read";
+        readBtn.textContent = "Read Article";
+        updateStatus("loading", "Error occurred");
       });
+    };
 
-      function playNext() {
-        if (audioQueue.length === 0) {
-          isPlaying = false;
-          updateDisplay();
-          return;
-        }
-        isPlaying = true;
-        const next = audioQueue.shift();
-        player.src = next.url;
-        currentChunkDuration = next.duration;
-        bufferedDuration -= next.duration;
-        player.play();
-        updateDisplay();
+    function playCurrentChunk() {
+      if (currentChunkIndex >= audioQueue.length) {
+        isPlaying = false;
+        return;
       }
 
-      player.ontimeupdate = () => {
+      const currentChunk = audioQueue[currentChunkIndex];
+      player.src = currentChunk.url;
+      isPlaying = true;
+
+      // Auto-play if user had started playing before
+      if (shouldAutoPlay) {
+        player.play().catch(e => console.log("Auto-play prevented:", e));
+      }
+
+      updateDisplay();
+      updateNavigationControls();
+    }
+
+    function playNextChunk() {
+      // Add the duration of the completed chunk to played duration
+      if (currentChunkIndex < audioQueue.length) {
+        playedDuration += audioQueue[currentChunkIndex].duration;
+      }
+
+      currentChunkIndex++;
+      if (currentChunkIndex < audioQueue.length) {
+        playCurrentChunk();
+      } else {
+        isPlaying = false;
         updateDisplay();
-      };
+        updateNavigationControls();
+      }
+    }
 
-      player.onended = () => {
-        playedDuration += currentChunkDuration;
-        currentChunkDuration = 0;
-        updateDisplay();
-        playNext();
-      };
-
-      function updateDisplay() {
-        const currentTime = player.currentTime || 0;
-        const elapsed = playedDuration + currentTime;
-        const total = playedDuration + currentChunkDuration + bufferedDuration;
-
-        // Update progress bar width (percent)
-        let progressPercent = total > 0 ? (elapsed / total) * 100 : 0;
-        progressBar.style.width = progressPercent + "%";
-
-        // Format time helper
-        function formatTime(seconds) {
-          const mins = Math.floor(seconds / 60);
-          const secs = Math.floor(seconds % 60);
-          return `${mins}:${secs.toString().padStart(2, "0")}`;
+    function playPreviousChunk() {
+      if (currentChunkIndex > 0) {
+        // Subtract the duration of the current chunk from played duration
+        if (currentChunkIndex < audioQueue.length) {
+          playedDuration -= audioQueue[currentChunkIndex].duration;
         }
 
-        timeDisplay.textContent = `Elapsed: ${formatTime(elapsed)} / Total: ${formatTime(total)}`;
+        currentChunkIndex--;
+        playCurrentChunk();
+      }
+    }
+
+    function jumpToChunk(chunkIndex) {
+      if (chunkIndex >= 0 && chunkIndex < audioQueue.length) {
+        // Calculate played duration up to the target chunk
+        playedDuration = 0;
+        for (let i = 0; i < chunkIndex; i++) {
+          playedDuration += audioQueue[i].duration;
+        }
+
+        currentChunkIndex = chunkIndex;
+        playCurrentChunk();
+      }
+    }
+
+    function showFullAudio() {
+      if (combinedAudioUrl) {
+        fullAudioPlayer.src = combinedAudioUrl;
+        fullAudioContainer.classList.add("show");
+      }
+    }
+
+    function updateNavigationControls() {
+      const totalChunks = audioQueue.length;
+
+      // Update chunk indicator
+      chunkIndicator.textContent = `Chunk ${currentChunkIndex + 1}/${totalChunks}`;
+
+      // Update navigation buttons
+      prevChunkBtn.disabled = currentChunkIndex <= 0 || totalChunks === 0;
+      nextChunkBtn.disabled = currentChunkIndex >= totalChunks - 1 || totalChunks === 0;
+    }
+
+    // Navigation button event listeners
+    prevChunkBtn.onclick = () => {
+      if (currentChunkIndex > 0) {
+        playPreviousChunk();
       }
     };
+
+    nextChunkBtn.onclick = () => {
+      if (currentChunkIndex < audioQueue.length - 1) {
+        playNextChunk();
+      }
+    };
+
+    // Audio event handlers
+    player.ontimeupdate = () => {
+      updateDisplay();
+    };
+
+    player.onloadedmetadata = () => {
+      updateDisplay();
+    };
+
+    player.onprogress = () => {
+      updateBufferedProgress();
+    };
+
+    player.onended = () => {
+      // When current chunk ends, play the next one if available
+      if (isStreaming && currentChunkIndex < audioQueue.length - 1) {
+        playNextChunk();
+      } else if (currentChunkIndex < audioQueue.length) {
+        // This was the last chunk, mark as complete
+        playedDuration += audioQueue[currentChunkIndex].duration;
+        currentChunkIndex++;
+        isPlaying = false;
+        updateDisplay();
+        updateNavigationControls();
+      }
+    };
+
+    player.onplay = () => {
+      shouldAutoPlay = true;
+      isPlaying = true;
+    };
+
+    player.onpause = () => {
+      isPlaying = false;
+    };
+
+    function updateDisplay() {
+      if (!player.duration || isNaN(player.duration)) {
+        timeDisplay.textContent = "Ready to start";
+        progressBar.style.width = "0%";
+        return;
+      }
+
+      const currentTime = player.currentTime || 0;
+
+      // Calculate total elapsed time (completed chunks + current chunk progress)
+      const totalElapsed = playedDuration + currentTime;
+
+      // Update progress bar
+      const progressPercent = totalDuration > 0 ? (totalElapsed / totalDuration) * 100 : 0;
+      progressBar.style.width = Math.min(progressPercent, 100) + "%";
+
+      // Update time display
+      timeDisplay.textContent = `${formatTime(totalElapsed)} / ${formatTime(totalDuration)}`;
+    }
+
+    function updateBufferedProgress() {
+      if (!player.buffered || player.buffered.length === 0) {
+        bufferedBar.style.width = "0%";
+        return;
+      }
+
+      const bufferedEnd = player.buffered.end(player.buffered.length - 1);
+      const duration = player.duration;
+      const bufferedPercent = (bufferedEnd / duration) * 100;
+      bufferedBar.style.width = bufferedPercent + "%";
+    }
+
+    function updateStatus(type, message) {
+      statusDiv.className = `status ${type}`;
+      statusDiv.textContent = message;
+      statusDiv.style.display = "block";
+    }
+
+    function updateChunkInfo(currentChunk = null, totalChunks = null, chunkDuration = null) {
+      if (currentChunk && totalChunks) {
+        chunkInfo.textContent = `Chunk ${currentChunk}/${totalChunks} (${chunkDuration ? chunkDuration.toFixed(1) + 's' : ''})`;
+      } else {
+        chunkInfo.textContent = "";
+      }
+    }
+
+    function formatTime(seconds) {
+      if (isNaN(seconds)) return "0:00";
+      const mins = Math.floor(seconds / 60);
+      const secs = Math.floor(seconds % 60);
+      return `${mins}:${secs.toString().padStart(2, "0")}`;
+    }
   </script>
 </body>
 
