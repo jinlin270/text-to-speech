@@ -30,17 +30,21 @@ def index():
     return render_template("index.html")
 
 
-def chunk_text(text, max_chars=3500):
+def chunk_text(text, max_chars=500):
     # Split on paragraph boundaries if possible
     paragraphs = text.split("\n")
     chunks, chunk = [], ""
     for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue  # skip empty paragraphs
         if len(chunk) + len(para) < max_chars:
             chunk += para + "\n"
         else:
-            chunks.append(chunk.strip())
+            if chunk.strip():  # only append non-empty chunk
+                chunks.append(chunk.strip())
             chunk = para + "\n"
-    if chunk:
+    if chunk.strip():
         chunks.append(chunk.strip())
     return chunks
 
