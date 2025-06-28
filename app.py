@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, render_template
 import openai
 import requests
 from io import BytesIO
@@ -13,6 +13,11 @@ app = Flask(__name__)
 CORS(app)  # allow cross-origin if frontend is hosted separately
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
+
+@app.route("/")
+def index():
+    return render_template("index.html")
 
 
 def chunk_text(text, max_chars=3500):
@@ -77,4 +82,4 @@ def read_url():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5001, debug=True)
