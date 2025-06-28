@@ -1,0 +1,6 @@
+Flask
+openai
+newspaper3k
+requests
+python-dotenv
+flask-cors

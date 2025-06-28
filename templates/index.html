@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Read a Webpage Aloud</title>
+</head>
+
+<body>
+  <h2>Read Website Aloud</h2>
+  <input type="text" id="url" placeholder="Enter article URL" size="50" />
+
+  <select id="voice">
+    <option value="shimmer">Shimmer (Sky)</option>
+    <option value="onyx">Onyx (Ember)</option>
+    <option value="nova">Nova (Cove)</option>
+    <option value="echo">Echo (Breeze)</option>
+    <option value="fable">Fable (Juniper)</option>
+  </select>
+
+  <button id="readBtn" onclick="readAloud()">Read</button>
+
+  <br /><br />
+
+  <audio id="player" controls></audio>
+
+  <script>
+    async function readAloud() {
+      const readBtn = document.getElementById("readBtn");
+      const urlInput = document.getElementById("url");
+      const voiceSelect = document.getElementById("voice");
+      const player = document.getElementById("player");
+
+      const url = urlInput.value.trim();
+      if (!url) {
+        alert("Please enter a URL");
+        return;
+      }
+
+      readBtn.disabled = true;
+      readBtn.textContent = "Loading...";
+
+      try {
+        const response = await fetch("/read-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: url,
+            voice: voiceSelect.value
+          }),
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+          alert("Error: " + data.error);
+          readBtn.disabled = false;
+          readBtn.textContent = "Read";
+          return;
+        }
+
+        const audioChunks = data.audioChunks;
+        let currentIndex = 0;
+
+        function playNext() {
+          if (currentIndex < audioChunks.length) {
+            player.src = audioChunks[currentIndex];
+            player.play();
+            currentIndex++;
+          } else {
+            readBtn.disabled = false;
+            readBtn.textContent = "Read";
+          }
+        }
+
+        player.onended = playNext;
+        playNext();
+
+      } catch (err) {
+        alert("Error: " + err.message);
+        readBtn.disabled = false;
+        readBtn.textContent = "Read";
+      }
+    }
+  </script>
+</body>
+
+</html>
