@@ -1,11 +1,12 @@
 Flask==2.3.3
 Jinja2==3.1.2
-openai
-newspaper3k
+openai==1.3.7
+newspaper3k==0.2.8
 requests
 python-dotenv
-flask-cors
-pydub
+flask-cors==4.0.0
+pydub==0.25.1
 lxml
 lxml_html_clean
-boto3
+boto3==1.34.0
+PyPDF2==3.0.1

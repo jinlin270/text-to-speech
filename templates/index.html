@@ -119,6 +119,127 @@
       flex-wrap: wrap;
     }
 
+    .tab-container {
+      margin-bottom: 20px;
+    }
+
+    .tab-buttons {
+      display: flex;
+      border-bottom: 2px solid #ddd;
+      margin-bottom: 20px;
+    }
+
+    .tab-button {
+      padding: 12px 24px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: bold;
+      color: #666;
+      border-bottom: 3px solid transparent;
+      transition: all 0.3s;
+    }
+
+    .tab-button.active {
+      color: #4caf50;
+      border-bottom-color: #4caf50;
+    }
+
+    .tab-button:hover {
+      color: #4caf50;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    .file-upload-container {
+      border: 2px dashed #ddd;
+      border-radius: 8px;
+      padding: 40px;
+      text-align: center;
+      background: #f9f9f9;
+      transition: border-color 0.3s;
+    }
+
+    .file-upload-container:hover {
+      border-color: #4caf50;
+    }
+
+    .file-upload-container.dragover {
+      border-color: #4caf50;
+      background: #e8f5e8;
+    }
+
+    .file-input {
+      display: none;
+    }
+
+    .upload-label {
+      cursor: pointer;
+      color: #4caf50;
+      font-weight: bold;
+      font-size: 16px;
+    }
+
+    .upload-label:hover {
+      text-decoration: underline;
+    }
+
+    .pdf-info {
+      background: #e3f2fd;
+      border: 1px solid #2196F3;
+      border-radius: 8px;
+      padding: 15px;
+      margin: 15px 0;
+      display: none;
+    }
+
+    .pdf-info.show {
+      display: block;
+    }
+
+    .pdf-info h4 {
+      margin: 0 0 10px 0;
+      color: #1976d2;
+    }
+
+    .pdf-details {
+      font-size: 14px;
+      color: #666;
+    }
+
+    .remove-btn {
+      background: #f44336;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      padding: 8px 16px;
+      font-size: 12px;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+
+    .remove-btn:hover {
+      background: #d32f2f;
+    }
+
+    .file-upload-container.uploaded {
+      background: #e8f5e8;
+      border-color: #4caf50;
+      pointer-events: none;
+    }
+
+    .file-upload-container.uploaded .upload-label {
+      color: #2e7d32;
+      font-weight: normal;
+    }
+
     input[type="text"] {
       flex: 1;
       padding: 12px;
@@ -404,6 +525,40 @@
       font-size: 12px;
       color: #856404;
     }
+
+    .shared-controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin: 20px 0;
+      padding: 15px;
+      background: #f8f9fa;
+      border-radius: 8px;
+      border: 1px solid #e9ecef;
+    }
+
+    .shared-controls select {
+      min-width: 150px;
+    }
+
+    .shared-controls button {
+      min-width: 120px;
+    }
+
+    .debug-btn {
+      background: #2196F3;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      padding: 8px 16px;
+      font-size: 12px;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+
+    .debug-btn:hover {
+      background: #1976D2;
+    }
   </style>
 </head>
 
@@ -439,19 +594,47 @@
     </div>
 
     <div class="input-group">
-      <input type="text" id="url" placeholder="Enter article URL" />
-      <select id="service">
-        <option value="openai">OpenAI TTS</option>
-        <option value="polly">AWS Polly (Cheaper)</option>
-      </select>
-      <select id="voice">
-        <option value="shimmer">Shimmer (Sky)</option>
-        <option value="onyx">Onyx (Ember)</option>
-        <option value="nova">Nova (Cove)</option>
-        <option value="echo">Echo (Breeze)</option>
-        <option value="fable">Fable (Juniper)</option>
-      </select>
-      <button id="readBtn">Read Article</button>
+      <div class="tab-container">
+        <div class="tab-buttons">
+          <button class="tab-button active" data-tab="url">URL</button>
+          <button class="tab-button" data-tab="pdf">PDF</button>
+        </div>
+      </div>
+
+      <!-- Shared controls -->
+      <div class="shared-controls">
+        <select id="service">
+          <option value="openai">OpenAI TTS</option>
+          <option value="polly">AWS Polly (Cheaper)</option>
+        </select>
+        <select id="voice">
+          <option value="shimmer">Shimmer (Sky)</option>
+          <option value="onyx">Onyx (Ember)</option>
+          <option value="nova">Nova (Cove)</option>
+          <option value="echo">Echo (Breeze)</option>
+          <option value="fable">Fable (Juniper)</option>
+        </select>
+        <button id="readBtn">Read Article</button>
+      </div>
+
+      <!-- Tab content -->
+      <div class="tab-content active" id="url-tab">
+        <input type="text" id="url" placeholder="Enter article URL" />
+      </div>
+      <div class="tab-content" id="pdf-tab">
+        <div class="file-upload-container" id="uploadContainer">
+          <input type="file" id="pdfFile" class="file-input" accept=".pdf">
+          <label for="pdfFile" class="upload-label">Drag and drop PDF here or click to upload</label>
+        </div>
+        <div id="pdfInfo" class="pdf-info">
+          <h4>PDF Information</h4>
+          <div class="pdf-details">
+            <!-- PDF details will be populated here -->
+          </div>
+          <button id="removePdfBtn" class="remove-btn">Remove PDF</button>
+          <button id="testSessionBtn" class="debug-btn">Test Session</button>
+        </div>
+      </div>
     </div>
 
     <div id="status" class="status" style="display: none;"></div>
@@ -517,6 +700,19 @@
     const resetUsageBtn = document.getElementById("resetUsageBtn");
     const changeLimitBtn = document.getElementById("changeLimitBtn");
 
+    // Tab system elements
+    const tabButtons = document.querySelectorAll('.tab-button');
+    const tabContents = document.querySelectorAll('.tab-content');
+
+    // PDF upload elements
+    const pdfFileInput = document.getElementById('pdfFile');
+    const fileUploadContainer = document.querySelector('.file-upload-container');
+    const uploadContainer = document.getElementById('uploadContainer');
+    const pdfInfo = document.getElementById('pdfInfo');
+    const pdfDetails = pdfInfo.querySelector('.pdf-details');
+    const removePdfBtn = document.getElementById('removePdfBtn');
+    const testSessionBtn = document.getElementById('testSessionBtn');
+
     let eventSource = null;
     let currentSessionId = null;
     let totalDuration = 0;
@@ -528,11 +724,18 @@
     let playedDuration = 0; // Total duration of completed chunks
     let combinedAudioUrl = null; // URL for the complete audio when streaming ends
     let isTransitioningToFullAudio = false; // Flag to track transition state
+    let currentPdfFilename = null; // Store current PDF filename
 
     // Load history and usage on page load
     document.addEventListener('DOMContentLoaded', () => {
       loadHistory();
       loadUsage();
+      setupTabs();
+      setupPdfUpload();
+
+      // Set up voice options update for service changes
+      serviceSelect.addEventListener('change', updateVoiceOptions);
+      updateVoiceOptions(); // Initialize voice options
     });
 
     refreshHistoryBtn.onclick = loadHistory;
@@ -837,6 +1040,16 @@
     }
 
     readBtn.onclick = () => {
+      const activeTab = document.querySelector('.tab-button.active').getAttribute('data-tab');
+
+      if (activeTab === 'url') {
+        handleUrlRequest();
+      } else if (activeTab === 'pdf') {
+        handlePdfRequest();
+      }
+    };
+
+    function handleUrlRequest() {
       const articleUrl = urlInput.value.trim();
       const selectedService = serviceSelect.value;
       const selectedVoice = voiceSelect.value;
@@ -846,6 +1059,29 @@
         return;
       }
 
+      startStreaming('/stream-read', {
+        url: articleUrl,
+        service: selectedService,
+        voice: selectedVoice
+      });
+    }
+
+    function handlePdfRequest() {
+      if (!currentPdfFilename) {
+        alert("Please upload a PDF first");
+        return;
+      }
+
+      const selectedService = serviceSelect.value;
+      const selectedVoice = voiceSelect.value;
+
+      startStreaming('/stream-pdf', {
+        service: selectedService,
+        voice: selectedVoice
+      });
+    }
+
+    function startStreaming(endpoint, params) {
       // Reset state
       isStreaming = false;
       totalDuration = 0;
@@ -868,10 +1104,10 @@
       readBtn.textContent = "Loading...";
 
       // Build streaming URL with query params
-      const streamUrl = new URL("/stream-read", window.location.origin);
-      streamUrl.searchParams.set("url", articleUrl);
-      streamUrl.searchParams.set("service", selectedService);
-      streamUrl.searchParams.set("voice", selectedVoice);
+      const streamUrl = new URL(endpoint, window.location.origin);
+      Object.keys(params).forEach(key => {
+        streamUrl.searchParams.set(key, params[key]);
+      });
 
       eventSource = new EventSource(streamUrl);
 
@@ -912,7 +1148,8 @@
         console.log("Streaming ended");
         eventSource.close();
         readBtn.disabled = false;
-        readBtn.textContent = "Read Article";
+        const activeTab = document.querySelector('.tab-button.active').getAttribute('data-tab');
+        readBtn.textContent = activeTab === 'pdf' ? "Read PDF" : "Read Article";
         isStreaming = false;
         updateStatus("complete", "Audio generation complete!");
         updateChunkInfo();
@@ -956,10 +1193,11 @@
 
         eventSource.close();
         readBtn.disabled = false;
-        readBtn.textContent = "Read Article";
+        const activeTab = document.querySelector('.tab-button.active').getAttribute('data-tab');
+        readBtn.textContent = activeTab === 'pdf' ? "Read PDF" : "Read Article";
         updateStatus("loading", "Error occurred");
       });
-    };
+    }
 
     function playCurrentChunk() {
       if (currentChunkIndex >= audioQueue.length) {
@@ -1255,6 +1493,166 @@
       if (completionTitle) {
         completionTitle.remove();
       }
+    }
+
+    // Tab system
+    function setupTabs() {
+      tabButtons.forEach(button => {
+        button.addEventListener('click', () => {
+          const tabName = button.getAttribute('data-tab');
+          switchTab(tabName);
+        });
+      });
+    }
+
+    function switchTab(tabName) {
+      // Update tab buttons
+      tabButtons.forEach(btn => btn.classList.remove('active'));
+      document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+
+      // Update tab contents
+      tabContents.forEach(content => content.classList.remove('active'));
+      document.getElementById(`${tabName}-tab`).classList.add('active');
+
+      // Update button text and state based on active tab
+      if (tabName === 'pdf') {
+        readBtn.textContent = 'Read PDF';
+        readBtn.disabled = !currentPdfFilename; // Disable if no PDF uploaded
+      } else {
+        readBtn.textContent = 'Read Article';
+        readBtn.disabled = false; // Enable for URL mode
+        // Clear PDF info when switching to URL tab
+        pdfInfo.classList.remove('show');
+        currentPdfFilename = null;
+      }
+    }
+
+    // PDF upload functionality
+    function setupPdfUpload() {
+      // File input change handler
+      pdfFileInput.addEventListener('change', handlePdfUpload);
+
+      // Remove PDF button handler
+      removePdfBtn.addEventListener('click', removePdf);
+
+      // Test session button handler
+      testSessionBtn.addEventListener('click', testSession);
+
+      // Drag and drop handlers
+      fileUploadContainer.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        fileUploadContainer.classList.add('dragover');
+      });
+
+      fileUploadContainer.addEventListener('dragleave', () => {
+        fileUploadContainer.classList.remove('dragover');
+      });
+
+      fileUploadContainer.addEventListener('drop', (e) => {
+        e.preventDefault();
+        fileUploadContainer.classList.remove('dragover');
+
+        const files = e.dataTransfer.files;
+        if (files.length > 0 && files[0].type === 'application/pdf') {
+          pdfFileInput.files = files;
+          handlePdfUpload();
+        }
+      });
+    }
+
+    async function handlePdfUpload() {
+      const file = pdfFileInput.files[0];
+      if (!file) return;
+
+      if (!file.name.toLowerCase().endsWith('.pdf')) {
+        alert('Please select a PDF file');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const response = await fetch('/api/upload-pdf', {
+          method: 'POST',
+          body: formData
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          currentPdfFilename = file.name;
+          showPdfInfo(result);
+          showPdfUploadedState();
+          readBtn.disabled = false; // Enable the read button
+          alert(result.message);
+        } else {
+          alert('PDF upload failed: ' + result.message);
+        }
+      } catch (error) {
+        console.error('PDF upload error:', error);
+        alert('PDF upload failed: ' + error.message);
+      }
+    }
+
+    function showPdfInfo(result) {
+      pdfDetails.innerHTML = `
+        <p><strong>Filename:</strong> ${result.filename}</p>
+        <p><strong>Text Length:</strong> ${result.textLength.toLocaleString()} characters</p>
+        <p><strong>Status:</strong> Ready for audio generation</p>
+      `;
+      pdfInfo.classList.add('show');
+    }
+
+    function showPdfUploadedState() {
+      uploadContainer.classList.add('uploaded');
+      uploadContainer.querySelector('.upload-label').textContent = `PDF uploaded: ${currentPdfFilename}`;
+    }
+
+    function removePdf() {
+      // Clear the file input
+      pdfFileInput.value = '';
+
+      // Reset the upload container
+      uploadContainer.classList.remove('uploaded');
+      uploadContainer.querySelector('.upload-label').textContent = 'Drag and drop PDF here or click to upload';
+
+      // Hide PDF info
+      pdfInfo.classList.remove('show');
+
+      // Clear variables
+      currentPdfFilename = null;
+
+      // Disable read button if we're on PDF tab
+      const activeTab = document.querySelector('.tab-button.active').getAttribute('data-tab');
+      if (activeTab === 'pdf') {
+        readBtn.disabled = true;
+      }
+
+      // Clear session data on server
+      fetch('/api/clear-pdf', { method: 'POST' }).catch(e => console.log('Failed to clear PDF session:', e));
+    }
+
+    function testSession() {
+      fetch('/api/test-session')
+        .then(response => response.json())
+        .then(data => {
+          console.log('Session test result:', data);
+          alert(`Session Test Results:\n` +
+            `Session Working: ${data.session_working}\n` +
+            `Has PDF Session ID: ${data.has_pdf_session_id}\n` +
+            `Has PDF Filename: ${data.has_pdf_filename}\n` +
+            `PDF Session ID: ${data.pdf_session_id || 'None'}\n` +
+            `PDF Filename: ${data.pdf_filename || 'None'}\n` +
+            `PDF Text File: ${data.pdf_text_file || 'None'}\n` +
+            `PDF Text File Exists: ${data.pdf_text_file_exists}\n` +
+            `PDF Text Length: ${data.pdf_text_length}\n` +
+            `Session Keys: ${data.session_keys.join(', ')}`);
+        })
+        .catch(error => {
+          console.error('Session test failed:', error);
+          alert('Session test failed: ' + error.message);
+        });
     }
   </script>
 </body>

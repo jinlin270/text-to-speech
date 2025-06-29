@@ -23,13 +23,22 @@ import boto3
 from botocore.exceptions import ClientError
 import hashlib
 import secrets
+import PyPDF2
+import base64
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 CORS(app)  # allow cross-origin if frontend is hosted separately
 
+# Debug session configuration
+print(f"[DEBUG] Flask secret key set: {bool(app.secret_key)}")
+print(f"[DEBUG] Secret key length: {len(app.secret_key) if app.secret_key else 0}")
+
 # Store for past audio requests
 audio_requests = {}
+
+# Store for PDF text files (session_id -> file_path)
+pdf_text_files = {}
 
 # Usage tracking
 USAGE_LIMIT = float(os.getenv("USAGE_LIMIT", "10"))  # Configurable usage limit
@@ -455,11 +464,335 @@ def synthesize_with_polly(text, voice):
         raise Exception(f"AWS Polly error: {str(e)}")
 
 
+def validate_streaming_request(service, source_type="url"):
+    """Validate streaming request parameters and service availability
+
+    Args:
+        service (str): TTS service to use ("openai" or "polly")
+        source_type (str): Type of source ("url" or "pdf")
+
+    Raises:
+        ValueError: If service is invalid or not configured
+    """
+    if service not in ["openai", "polly"]:
+        raise ValueError("Invalid service selected")
+
+    if service == "openai" and not openai.api_key:
+        raise ValueError("OpenAI service not configured")
+
+    if service == "polly":
+        if not polly_client:
+            raise ValueError(
+                "AWS Polly service not configured. Please check AWS credentials."
+            )
+        if not aws_access_key_id or not aws_secret_access_key:
+            raise ValueError(
+                "AWS credentials not configured. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY."
+            )
+
+
+def get_text_from_source(source_type, url=None):
+    """Extract text from URL or PDF based on source type
+
+    Args:
+        source_type (str): Type of source ("url" or "pdf")
+        url (str, optional): URL to extract text from (for URL source type)
+
+    Returns:
+        tuple: (extracted_text, source_identifier)
+
+    Raises:
+        ValueError: If source is invalid or text extraction fails
+    """
+    if source_type == "url":
+        if not url:
+            raise ValueError("No URL provided")
+
+        # Add retry logic for article download
+        max_retries = 3
+        retry_delay = 2  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                article = Article(url)
+                article.download()
+                article.parse()
+                break  # Success, exit retry loop
+            except Exception as e:
+                if "429" in str(e) or "Too Many Requests" in str(e):
+                    if attempt < max_retries - 1:
+                        print(
+                            f"[WARNING] Rate limited (attempt {attempt + 1}/{max_retries}). Waiting {retry_delay} seconds..."
+                        )
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                        continue
+                    else:
+                        print("[ERROR] Rate limited after all retries")
+                        raise ValueError(
+                            "Website is rate limiting requests. Please try again later or use a different URL."
+                        )
+                else:
+                    # Non-rate-limit error, don't retry
+                    raise e
+
+        text = article.text
+        if not text or len(text.strip()) < 10:
+            raise ValueError(
+                "No readable text content found on this page. Please try a different URL."
+            )
+
+        return text, url
+
+    elif source_type == "pdf":
+        pdf_session_id = session.get("pdf_session_id")
+        pdf_filename = session.get("pdf_filename")
+
+        if not pdf_session_id:
+            raise ValueError("No PDF session found. Please upload a PDF first.")
+
+        # Get the text file path
+        pdf_text_file = pdf_text_files.get(pdf_session_id)
+        if not pdf_text_file:
+            raise ValueError("PDF text file not found. Please upload a PDF first.")
+
+        # Read the text from file
+        try:
+            with open(pdf_text_file, "r", encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            raise ValueError("PDF text file not found. Please upload a PDF first.")
+        except Exception as e:
+            raise ValueError(f"Failed to read PDF text: {str(e)}")
+
+        if not text or len(text.strip()) < 10:
+            raise ValueError(
+                "No readable text found in PDF. Please try a different PDF."
+            )
+
+        return text, f"PDF: {pdf_filename}"
+
+    else:
+        raise ValueError(f"Invalid source type: {source_type}")
+
+
+def validate_voice_for_service(voice, service):
+    """Validate and return appropriate voice for the selected service
+
+    Args:
+        voice (str): Requested voice name
+        service (str): TTS service ("openai" or "polly")
+
+    Returns:
+        str: Validated voice name (defaults to service default if invalid)
+    """
+    if service == "openai":
+        allowed_voices = {"shimmer", "onyx", "nova", "echo", "fable"}
+        if voice not in allowed_voices:
+            print(f"[WARNING] Invalid OpenAI voice '{voice}', defaulting to shimmer.")
+            return "shimmer"
+    elif service == "polly":
+        allowed_voices = {
+            "joanna",
+            "matthew",
+            "ivy",
+            "justin",
+            "kendra",
+            "kevin",
+            "salli",
+            "kimberly",
+            "joey",
+            "emma",
+        }
+        if voice not in allowed_voices:
+            print(f"[WARNING] Invalid Polly voice '{voice}', defaulting to joanna.")
+            return "joanna"
+
+    return voice
+
+
+def check_usage_and_initialize_request(text, service, voice, source_url):
+    """Check usage limits and initialize request data
+
+    Args:
+        text (str): Text to be processed
+        service (str): TTS service to use
+        voice (str): Voice to use
+        source_url (str): Source identifier for the request
+
+    Returns:
+        tuple: (text_chunks, session_id)
+
+    Raises:
+        ValueError: If usage limit would be exceeded
+    """
+    chunks = chunk_text(text)
+    print(f"[DEBUG] Text split into {len(chunks)} chunk(s).")
+
+    # Check usage limit before processing
+    total_text_length = sum(len(chunk) for chunk in chunks)
+    estimated_cost = calculate_cost(service, total_text_length)
+
+    if not check_usage_limit(service, total_text_length):
+        error_msg = f"Usage limit exceeded. Estimated cost: ${estimated_cost:.4f}, Remaining: ${USAGE_LIMIT - current_usage:.4f}"
+        print(f"[ERROR] {error_msg}")
+        raise ValueError(error_msg)
+
+    # Initialize request data
+    session_id = uuid.uuid4().hex
+    audio_requests[session_id] = {
+        "url": source_url,
+        "voice": voice,
+        "service": service,
+        "timestamp": datetime.now().isoformat(),
+        "totalChunks": 0,
+        "totalDuration": 0,
+        "cost": 0.0,
+    }
+
+    return chunks, session_id
+
+
+def finalize_audio_request(chunk_files, session_id, total_cost, total_duration_so_far):
+    """Create combined audio file and clean up temporary files
+
+    Args:
+        chunk_files (list): List of chunk file paths
+        session_id (str): Unique session identifier
+        total_cost (float): Total cost of the request
+        total_duration_so_far (float): Total duration of all chunks
+    """
+    combined_audio_path = f"static/combined_{session_id}.mp3"
+
+    # Create combined audio file when streaming is complete
+    print("[DEBUG] Creating combined audio file...")
+    combine_audio_chunks(chunk_files, combined_audio_path)
+    print(f"[DEBUG] Combined audio saved as {combined_audio_path}")
+
+    # Remove individual chunk files to save disk space
+    print("[DEBUG] Cleaning up individual chunk files...")
+    for chunk_file in chunk_files:
+        try:
+            os.remove(chunk_file)
+            print(f"[DEBUG] Removed chunk file: {chunk_file}")
+        except Exception as e:
+            print(f"[WARNING] Failed to remove chunk file {chunk_file}: {e}")
+
+    # Update usage and request data
+    update_usage(total_cost)
+    audio_requests[session_id]["totalChunks"] = len(chunk_files)
+    audio_requests[session_id]["totalDuration"] = total_duration_so_far
+    audio_requests[session_id]["cost"] = total_cost
+
+    print(f"[DEBUG] Total cost for this request: ${total_cost:.4f}")
+    print("[DEBUG] Streaming complete.")
+
+
+def generate_streaming_audio(source_type, voice, service, url=None):
+    """Main streaming generator function that handles both URL and PDF sources
+
+    Args:
+        source_type (str): Type of source ("url" or "pdf")
+        voice (str): Voice to use for TTS
+        service (str): TTS service to use ("openai" or "polly")
+        url (str, optional): URL to process (for URL source type)
+
+    Yields:
+        str: Server-sent events data for streaming audio chunks
+    """
+    try:
+        # Validate request
+        validate_streaming_request(service, source_type)
+
+        # Get text from source
+        text, source_url = get_text_from_source(source_type, url)
+        print(f"[DEBUG] {source_type.upper()} text length: {len(text)}")
+
+        # Validate and normalize voice
+        voice = validate_voice_for_service(voice, service)
+
+        # Check usage and initialize request
+        chunks, session_id = check_usage_and_initialize_request(
+            text, service, voice, source_url
+        )
+
+        # Process audio chunks and yield streaming data
+        chunk_files = []
+        total_cost = 0.0
+
+        for idx, chunk in enumerate(chunks):
+            print(
+                f"[DEBUG] Synthesizing chunk {idx + 1}/{len(chunks)} with {service}..."
+            )
+
+            # Calculate cost for this chunk
+            chunk_cost = calculate_cost(service, len(chunk))
+            total_cost += chunk_cost
+
+            # Synthesize speech based on selected service
+            try:
+                if service == "openai":
+                    audio_bytes = synthesize_with_openai(chunk, voice)
+                else:  # polly
+                    audio_bytes = synthesize_with_polly(chunk, voice)
+            except Exception as e:
+                print(f"[ERROR] TTS synthesis failed for chunk {idx + 1}: {e}")
+                raise Exception(f"TTS synthesis failed: {str(e)}")
+
+            print("[DEBUG] TTS request complete, saving audio...")
+            audio_segment = AudioSegment.from_file(BytesIO(audio_bytes), format="mp3")
+            duration_sec = audio_segment.duration_seconds
+
+            # Save individual chunk to file
+            chunk_filename = f"static/chunk_{session_id}_{idx}.mp3"
+            with open(chunk_filename, "wb") as f:
+                f.write(audio_bytes)
+
+            chunk_files.append(chunk_filename)
+
+            # Calculate total duration so far
+            total_duration_so_far = sum(
+                AudioSegment.from_file(f, format="mp3").duration_seconds
+                for f in chunk_files
+            )
+
+            print(f"[DEBUG] Audio saved as {chunk_filename}")
+
+            # Send individual chunk URL and metadata to frontend
+            data = {
+                "audioUrl": "/" + chunk_filename,
+                "chunkDuration": duration_sec,
+                "totalDuration": total_duration_so_far,
+                "chunkIndex": idx,
+                "totalChunks": len(chunks),
+                "sessionId": session_id,
+            }
+            yield f"data: {json.dumps(data)}\n\n"
+
+            # Short delay to pace the stream
+            time.sleep(0.5)
+
+        # Finalize the request
+        finalize_audio_request(
+            chunk_files, session_id, total_cost, total_duration_so_far
+        )
+
+        yield "event: end\ndata: {}\n\n"
+
+    except Exception as e:
+        print("[ERROR] Exception occurred:", str(e))
+        import traceback
+
+        traceback.print_exc()
+        error_data = {"error": str(e)}
+        yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
+
+
 @app.route("/stream-read", methods=["GET"])
 def stream_read():
     url = request.args.get("url")
     voice = request.args.get("voice", "shimmer")
-    service = request.args.get("service", "openai")  # "openai" or "polly"
+    service = request.args.get("service", "openai")
 
     print("[DEBUG] Received request for URL:", url)
     print("[DEBUG] Selected voice:", voice)
@@ -469,219 +802,211 @@ def stream_read():
         print("[ERROR] No URL provided")
         return Response("No URL provided", status=400)
 
-    # Validate service selection
-    if service not in ["openai", "polly"]:
-        print("[ERROR] Invalid service selected")
-        return Response("Invalid service selected", status=400)
+    # Clean up old files before starting
+    cleanup_old_audio_files()
 
-    # Check if service is available
-    if service == "openai" and not openai.api_key:
-        print("[ERROR] OpenAI API key not configured")
-        return Response("OpenAI service not configured", status=500)
+    return Response(
+        stream_with_context(generate_streaming_audio("url", voice, service, url)),
+        mimetype="text/event-stream",
+    )
 
-    if service == "polly":
-        if not polly_client:
-            print("[ERROR] AWS Polly not configured")
-            return Response(
-                "AWS Polly service not configured. Please check AWS credentials.",
-                status=500,
-            )
-        if not aws_access_key_id or not aws_secret_access_key:
-            print("[ERROR] AWS credentials not configured")
-            return Response(
-                "AWS credentials not configured. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.",
-                status=500,
-            )
+
+@app.route("/stream-pdf", methods=["GET"])
+def stream_pdf():
+    voice = request.args.get("voice", "shimmer")
+    service = request.args.get("service", "openai")
+
+    print("[DEBUG] Received PDF streaming request")
+    print("[DEBUG] Selected voice:", voice)
+    print("[DEBUG] Selected service:", service)
+    print(f"[DEBUG] Session ID: {session.get('_id', 'No session ID')}")
+    print(f"[DEBUG] Session keys: {list(session.keys())}")
+    print(f"[DEBUG] Session contains pdf_text: {'pdf_text' in session}")
+    print(f"[DEBUG] Session contains pdf_filename: {'pdf_filename' in session}")
 
     # Clean up old files before starting
     cleanup_old_audio_files()
 
-    def generate(voice, service):
-        chunk_files = []
-        session_id = uuid.uuid4().hex
-        combined_audio_path = f"static/combined_{session_id}.mp3"
-        total_cost = 0.0
-
-        try:
-            print("[DEBUG] Starting article parsing...")
-
-            # Add retry logic for article download
-            max_retries = 3
-            retry_delay = 2  # seconds
-
-            for attempt in range(max_retries):
-                try:
-                    article = Article(url)
-                    article.download()
-                    article.parse()
-                    break  # Success, exit retry loop
-                except Exception as e:
-                    if "429" in str(e) or "Too Many Requests" in str(e):
-                        if attempt < max_retries - 1:
-                            print(
-                                f"[WARNING] Rate limited (attempt {attempt + 1}/{max_retries}). Waiting {retry_delay} seconds..."
-                            )
-                            time.sleep(retry_delay)
-                            retry_delay *= 2  # Exponential backoff
-                            continue
-                        else:
-                            print("[ERROR] Rate limited after all retries")
-                            yield f"event: error\ndata: {json.dumps({'error': 'Website is rate limiting requests. Please try again later or use a different URL.'})}\n\n"
-                            return
-                    else:
-                        # Non-rate-limit error, don't retry
-                        raise e
-
-            text = article.text
-            if not text or len(text.strip()) < 10:
-                print("[ERROR] No text content found")
-                yield f"event: error\ndata: {json.dumps({'error': 'No readable text content found on this page. Please try a different URL.'})}\n\n"
-                return
-
-            print("[DEBUG] Article downloaded and parsed, text length:", len(text))
-
-            chunks = chunk_text(text)
-            print(f"[DEBUG] Text split into {len(chunks)} chunk(s).")
-
-            # Check usage limit before processing
-            total_text_length = sum(len(chunk) for chunk in chunks)
-            estimated_cost = calculate_cost(service, total_text_length)
-
-            if not check_usage_limit(service, total_text_length):
-                error_msg = f"Usage limit exceeded. Estimated cost: ${estimated_cost:.4f}, Remaining: ${USAGE_LIMIT - current_usage:.4f}"
-                print(f"[ERROR] {error_msg}")
-                yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
-                return
-
-            # Initialize request data
-            audio_requests[session_id] = {
-                "url": url,
-                "voice": voice,
-                "service": service,
-                "timestamp": datetime.now().isoformat(),
-                "totalChunks": 0,
-                "totalDuration": 0,
-                "cost": 0.0,
-            }
-
-            # Validate voice based on service
-            if service == "openai":
-                allowed_voices = {"shimmer", "onyx", "nova", "echo", "fable"}
-                if voice not in allowed_voices:
-                    print(
-                        f"[WARNING] Invalid OpenAI voice '{voice}', defaulting to shimmer."
-                    )
-                    voice = "shimmer"
-            elif service == "polly":
-                allowed_voices = {
-                    "joanna",
-                    "matthew",
-                    "ivy",
-                    "justin",
-                    "kendra",
-                    "kevin",
-                    "salli",
-                    "kimberly",
-                    "joey",
-                    "emma",
-                }
-                if voice not in allowed_voices:
-                    print(
-                        f"[WARNING] Invalid Polly voice '{voice}', defaulting to joanna."
-                    )
-                    voice = "joanna"
-
-            for idx, chunk in enumerate(chunks):
-                print(
-                    f"[DEBUG] Synthesizing chunk {idx + 1}/{len(chunks)} with {service}..."
-                )
-
-                # Calculate cost for this chunk
-                chunk_cost = calculate_cost(service, len(chunk))
-                total_cost += chunk_cost
-
-                # Synthesize speech based on selected service
-                try:
-                    if service == "openai":
-                        audio_bytes = synthesize_with_openai(chunk, voice)
-                    else:  # polly
-                        audio_bytes = synthesize_with_polly(chunk, voice)
-                except Exception as e:
-                    print(f"[ERROR] TTS synthesis failed for chunk {idx + 1}: {e}")
-                    yield f"event: error\ndata: {json.dumps({'error': f'TTS synthesis failed: {str(e)}'})}\n\n"
-                    return
-
-                print("[DEBUG] TTS request complete, saving audio...")
-                audio_segment = AudioSegment.from_file(
-                    BytesIO(audio_bytes), format="mp3"
-                )
-                duration_sec = audio_segment.duration_seconds
-
-                # Save individual chunk to file
-                chunk_filename = f"static/chunk_{session_id}_{idx}.mp3"
-                with open(chunk_filename, "wb") as f:
-                    f.write(audio_bytes)
-
-                chunk_files.append(chunk_filename)
-
-                # Calculate total duration so far
-                total_duration_so_far = sum(
-                    AudioSegment.from_file(f, format="mp3").duration_seconds
-                    for f in chunk_files
-                )
-
-                print(f"[DEBUG] Audio saved as {chunk_filename}")
-
-                # Send individual chunk URL and metadata to frontend
-                data = {
-                    "audioUrl": "/" + chunk_filename,
-                    "chunkDuration": duration_sec,
-                    "totalDuration": total_duration_so_far,
-                    "chunkIndex": idx,
-                    "totalChunks": len(chunks),
-                    "sessionId": session_id,
-                }
-                yield f"data: {json.dumps(data)}\n\n"
-
-                # Short delay to pace the stream
-                time.sleep(0.5)
-
-            # Create combined audio file when streaming is complete
-            print("[DEBUG] Creating combined audio file...")
-            combine_audio_chunks(chunk_files, combined_audio_path)
-            print(f"[DEBUG] Combined audio saved as {combined_audio_path}")
-
-            # Remove individual chunk files to save disk space
-            print("[DEBUG] Cleaning up individual chunk files...")
-            for chunk_file in chunk_files:
-                try:
-                    os.remove(chunk_file)
-                    print(f"[DEBUG] Removed chunk file: {chunk_file}")
-                except Exception as e:
-                    print(f"[WARNING] Failed to remove chunk file {chunk_file}: {e}")
-
-            # Update usage and request data
-            update_usage(total_cost)
-            audio_requests[session_id]["totalChunks"] = len(chunks)
-            audio_requests[session_id]["totalDuration"] = total_duration_so_far
-            audio_requests[session_id]["cost"] = total_cost
-
-            print(f"[DEBUG] Total cost for this request: ${total_cost:.4f}")
-            print("[DEBUG] Streaming complete.")
-            yield "event: end\ndata: {}\n\n"
-
-        except Exception as e:
-            print("[ERROR] Exception occurred:", str(e))
-            import traceback
-
-            traceback.print_exc()
-
-            error_data = {"error": str(e)}
-            yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
-
     return Response(
-        stream_with_context(generate(voice, service)), mimetype="text/event-stream"
+        stream_with_context(generate_streaming_audio("pdf", voice, service)),
+        mimetype="text/event-stream",
     )
+
+
+@app.route("/api/upload-pdf", methods=["POST"])
+def upload_pdf():
+    """Handle PDF upload and extract text"""
+    try:
+        if "file" not in request.files:
+            return jsonify({"success": False, "message": "No file provided"}), 400
+
+        file = request.files["file"]
+        if file.filename == "":
+            return jsonify({"success": False, "message": "No file selected"}), 400
+
+        if not file.filename.lower().endswith(".pdf"):
+            return jsonify({"success": False, "message": "File must be a PDF"}), 400
+
+        # Read PDF content
+        pdf_content = file.read()
+
+        # Extract text from PDF
+        text = extract_text_from_pdf(pdf_content)
+
+        if not text or len(text.strip()) < 10:
+            return (
+                jsonify({"success": False, "message": "No readable text found in PDF"}),
+                400,
+            )
+
+        # Generate a unique session ID for this PDF
+        pdf_session_id = uuid.uuid4().hex
+
+        # Store the extracted text in a temporary file
+        pdf_text_file = f"static/pdf_text_{pdf_session_id}.txt"
+        with open(pdf_text_file, "w", encoding="utf-8") as f:
+            f.write(text)
+
+        # Store the file path and filename in session (small data)
+        session["pdf_session_id"] = pdf_session_id
+        session["pdf_filename"] = file.filename
+
+        # Store the mapping in memory
+        pdf_text_files[pdf_session_id] = pdf_text_file
+
+        print(f"[DEBUG] PDF uploaded successfully:")
+        print(f"[DEBUG] - Filename: {file.filename}")
+        print(f"[DEBUG] - Text length: {len(text)}")
+        print(f"[DEBUG] - PDF Session ID: {pdf_session_id}")
+        print(f"[DEBUG] - Text file: {pdf_text_file}")
+        print(
+            f"[DEBUG] - Session contains pdf_session_id: {'pdf_session_id' in session}"
+        )
+        print(f"[DEBUG] - Session contains pdf_filename: {'pdf_filename' in session}")
+
+        return jsonify(
+            {
+                "success": True,
+                "message": f"PDF processed successfully. Extracted {len(text)} characters.",
+                "textLength": len(text),
+                "filename": file.filename,
+                "pdfSessionId": pdf_session_id,
+            }
+        )
+
+    except Exception as e:
+        print(f"[ERROR] PDF upload failed: {e}")
+        return (
+            jsonify({"success": False, "message": f"PDF processing failed: {str(e)}"}),
+            500,
+        )
+
+
+def extract_text_from_pdf(pdf_content):
+    """Extract text from PDF content"""
+    try:
+        pdf_file = BytesIO(pdf_content)
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+
+        text = ""
+        for page_num in range(len(pdf_reader.pages)):
+            page = pdf_reader.pages[page_num]
+            text += page.extract_text() + "\n"
+
+        return text.strip()
+
+    except Exception as e:
+        print(f"[ERROR] PDF text extraction failed: {e}")
+        raise Exception(f"Failed to extract text from PDF: {str(e)}")
+
+
+@app.route("/api/clear-pdf", methods=["POST"])
+def clear_pdf():
+    """Clear PDF data from session and remove temporary files"""
+    try:
+        # Get the PDF session ID
+        pdf_session_id = session.get("pdf_session_id")
+
+        if pdf_session_id:
+            # Remove the text file
+            pdf_text_file = pdf_text_files.get(pdf_session_id)
+            if pdf_text_file and os.path.exists(pdf_text_file):
+                try:
+                    os.remove(pdf_text_file)
+                    print(f"[DEBUG] Removed PDF text file: {pdf_text_file}")
+                except Exception as e:
+                    print(
+                        f"[WARNING] Failed to remove PDF text file {pdf_text_file}: {e}"
+                    )
+
+            # Remove from memory mapping
+            pdf_text_files.pop(pdf_session_id, None)
+
+        # Remove PDF data from session
+        session.pop("pdf_session_id", None)
+        session.pop("pdf_filename", None)
+
+        return jsonify(
+            {"success": True, "message": "PDF data cleared from session and files"}
+        )
+
+    except Exception as e:
+        print(f"[ERROR] Failed to clear PDF session: {e}")
+        return jsonify({"success": False, "message": "Failed to clear PDF data"}), 500
+
+
+@app.route("/api/test-session", methods=["GET"])
+def test_session():
+    """Test session functionality"""
+    try:
+        # Try to set and get a test value
+        session["test_value"] = "test_data"
+        test_value = session.get("test_value")
+
+        # Check PDF session data
+        pdf_session_id = session.get("pdf_session_id")
+        pdf_filename = session.get("pdf_filename")
+        pdf_text_file = pdf_text_files.get(pdf_session_id) if pdf_session_id else None
+        pdf_text_length = 0
+
+        if pdf_text_file and os.path.exists(pdf_text_file):
+            try:
+                with open(pdf_text_file, "r", encoding="utf-8") as f:
+                    pdf_text_length = len(f.read())
+            except Exception as e:
+                print(f"[WARNING] Failed to read PDF text file: {e}")
+
+        return jsonify(
+            {
+                "success": True,
+                "session_working": test_value == "test_data",
+                "session_keys": list(session.keys()),
+                "has_pdf_session_id": "pdf_session_id" in session,
+                "has_pdf_filename": "pdf_filename" in session,
+                "pdf_session_id": pdf_session_id,
+                "pdf_filename": pdf_filename,
+                "pdf_text_file": pdf_text_file,
+                "pdf_text_file_exists": (
+                    os.path.exists(pdf_text_file) if pdf_text_file else False
+                ),
+                "pdf_text_length": pdf_text_length,
+            }
+        )
+
+    except Exception as e:
+        print(f"[ERROR] Session test failed: {e}")
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": str(e),
+                    "session_keys": (
+                        list(session.keys()) if hasattr(session, "keys") else []
+                    ),
+                }
+            ),
+            500,
+        )
 
 
 if __name__ == "__main__":
