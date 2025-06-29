@@ -527,6 +527,7 @@
     let shouldAutoPlay = false;
     let playedDuration = 0; // Total duration of completed chunks
     let combinedAudioUrl = null; // URL for the complete audio when streaming ends
+    let isTransitioningToFullAudio = false; // Flag to track transition state
 
     // Load history and usage on page load
     document.addEventListener('DOMContentLoaded', () => {
@@ -855,8 +856,10 @@
       shouldAutoPlay = false;
       playedDuration = 0;
       combinedAudioUrl = null;
+      isTransitioningToFullAudio = false;
       player.src = "";
       fullAudioContainer.classList.remove("show");
+      showChunkUI(); // Show chunk UI for new request
       updateDisplay();
       updateNavigationControls();
       updateStatus("loading", "Loading article...");
@@ -918,6 +921,14 @@
         if (audioQueue.length > 0) {
           combinedAudioUrl = `/static/combined_${currentSessionId}.mp3`;
           showFullAudio();
+
+          // If currently playing the last chunk, transition to full audio
+          if (isPlaying && currentChunkIndex === audioQueue.length - 1) {
+            transitionToFullAudio();
+          }
+
+          // Hide chunk-related UI elements
+          hideChunkUI();
         }
 
         // Refresh history and usage to show the new request
@@ -1012,9 +1023,54 @@
 
     function showFullAudio() {
       if (combinedAudioUrl) {
-        fullAudioPlayer.src = combinedAudioUrl;
         fullAudioContainer.classList.add("show");
+        // Note: The main player will be switched to the full audio via transitionToFullAudio()
       }
+    }
+
+    function transitionToFullAudio() {
+      if (!combinedAudioUrl || isTransitioningToFullAudio) return;
+
+      console.log("Transitioning to full audio...");
+      isTransitioningToFullAudio = true;
+
+      // Calculate the current position in the full audio
+      const currentTimeInFullAudio = playedDuration + (player.currentTime || 0);
+
+      console.log(`Transition details:
+        - playedDuration: ${playedDuration}s (completed chunks)
+        - current chunk time: ${player.currentTime || 0}s
+        - total position: ${currentTimeInFullAudio}s
+        - current chunk index: ${currentChunkIndex}
+        - total chunks: ${audioQueue.length}`);
+
+      // Store the current playing state
+      const wasPlaying = !player.paused;
+
+      // Switch the main player to the full audio
+      player.src = combinedAudioUrl;
+
+      // Wait for the audio to load, then set the position and play
+      player.onloadedmetadata = () => {
+        player.currentTime = currentTimeInFullAudio;
+
+        if (wasPlaying) {
+          player.play().then(() => {
+            console.log("Successfully transitioned to full audio at position:", currentTimeInFullAudio);
+            isTransitioningToFullAudio = false;
+          }).catch(e => {
+            console.log("Auto-play prevented for full audio:", e);
+            isTransitioningToFullAudio = false;
+          });
+        } else {
+          isTransitioningToFullAudio = false;
+        }
+
+        // Reset the onloadedmetadata handler
+        player.onloadedmetadata = () => {
+          updateDisplay();
+        };
+      };
     }
 
     function updateNavigationControls() {
@@ -1059,10 +1115,18 @@
       if (isStreaming && currentChunkIndex < audioQueue.length - 1) {
         playNextChunk();
       } else if (currentChunkIndex < audioQueue.length) {
-        // This was the last chunk, mark as complete
-        playedDuration += audioQueue[currentChunkIndex].duration;
+        // This was the last chunk
         currentChunkIndex++;
         isPlaying = false;
+
+        // If streaming has ended and we have full audio, transition to it
+        if (!isStreaming && combinedAudioUrl && !isTransitioningToFullAudio) {
+          transitionToFullAudio();
+        } else {
+          // Only add to playedDuration if we're not transitioning
+          playedDuration += audioQueue[currentChunkIndex - 1].duration;
+        }
+
         updateDisplay();
         updateNavigationControls();
       }
@@ -1085,16 +1149,20 @@
       }
 
       const currentTime = player.currentTime || 0;
+      const duration = player.duration || 0;
 
-      // Calculate total elapsed time (completed chunks + current chunk progress)
-      const totalElapsed = playedDuration + currentTime;
-
-      // Update progress bar
-      const progressPercent = totalDuration > 0 ? (totalElapsed / totalDuration) * 100 : 0;
-      progressBar.style.width = Math.min(progressPercent, 100) + "%";
-
-      // Update time display
-      timeDisplay.textContent = `${formatTime(totalElapsed)} / ${formatTime(totalDuration)}`;
+      // If we're streaming, calculate total elapsed time (completed chunks + current chunk progress)
+      if (isStreaming) {
+        const totalElapsed = playedDuration + currentTime;
+        const progressPercent = totalDuration > 0 ? (totalElapsed / totalDuration) * 100 : 0;
+        progressBar.style.width = Math.min(progressPercent, 100) + "%";
+        timeDisplay.textContent = `${formatTime(totalElapsed)} / ${formatTime(totalDuration)}`;
+      } else {
+        // We're playing the full audio
+        const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
+        progressBar.style.width = Math.min(progressPercent, 100) + "%";
+        timeDisplay.textContent = `${formatTime(currentTime)} / ${formatTime(duration)}`;
+      }
     }
 
     function updateBufferedProgress() {
@@ -1128,6 +1196,65 @@
       const mins = Math.floor(seconds / 60);
       const secs = Math.floor(seconds % 60);
       return `${mins}:${secs.toString().padStart(2, "0")}`;
+    }
+
+    function hideChunkUI() {
+      // Hide chunk-related UI elements
+      console.log("Hiding chunk-related UI elements");
+
+      // Hide navigation controls
+      document.querySelector('.navigation-controls').style.display = 'none';
+
+      // Hide chunk info
+      chunkInfo.style.display = 'none';
+
+      // Hide the "Complete Audio" section since we're using the main player
+      fullAudioContainer.style.display = 'none';
+
+      // Update the audio container styling to look cleaner
+      const audioContainer = document.querySelector('.audio-container');
+      audioContainer.style.border = '2px solid #4caf50';
+      audioContainer.style.borderRadius = '8px';
+      audioContainer.style.padding = '20px';
+      audioContainer.style.backgroundColor = '#f8f9fa';
+
+      // Add a completion title
+      let completionTitle = audioContainer.querySelector('.completion-title');
+      if (!completionTitle) {
+        completionTitle = document.createElement('div');
+        completionTitle.className = 'completion-title';
+        completionTitle.style.textAlign = 'center';
+        completionTitle.style.color = '#2e7d32';
+        completionTitle.style.fontSize = '18px';
+        completionTitle.style.fontWeight = 'bold';
+        completionTitle.style.marginBottom = '15px';
+        audioContainer.insertBefore(completionTitle, audioContainer.firstChild);
+      }
+      completionTitle.textContent = '🎧 Complete Audio Ready';
+    }
+
+    function showChunkUI() {
+      // Show chunk-related UI elements
+      console.log("Showing chunk-related UI elements");
+
+      // Show navigation controls
+      document.querySelector('.navigation-controls').style.display = 'flex';
+
+      // Show chunk info
+      chunkInfo.style.display = 'block';
+
+      // Reset the audio container styling
+      const audioContainer = document.querySelector('.audio-container');
+      audioContainer.style.border = 'none';
+      audioContainer.style.borderRadius = '0';
+      audioContainer.style.padding = '0';
+      audioContainer.style.backgroundColor = 'transparent';
+
+      // Remove completion title if it exists
+      const completionTitle = audioContainer.querySelector('.completion-title');
+      if (completionTitle) {
+        completionTitle.remove();
+      }
     }
   </script>
 </body>

@@ -176,7 +176,7 @@ def get_usage():
 
 
 @app.route("/api/usage", methods=["POST"])
-def update_usage():
+def update_usage_limit():
     """Update usage limit (Lin only)"""
     if session.get("authenticated_user") != "lin":
         return jsonify({"success": False, "message": "Unauthorized"}), 401
