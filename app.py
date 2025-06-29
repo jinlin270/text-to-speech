@@ -22,6 +22,7 @@ CORS(app)  # allow cross-origin if frontend is hosted separately
 # secrets = load_secrets()
 # openai.api_key = secrets["api-keys"]["open-api"]
 openai.api_key = os.getenv("OPENAI_API_KEY")
+os.makedirs("static", exist_ok=True)
 
 
 @app.route("/")
