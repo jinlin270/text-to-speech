@@ -526,6 +526,46 @@
       color: #856404;
     }
 
+    .status-badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 12px;
+      font-size: 10px;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .status-completed {
+      background: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+
+    .status-stopped {
+      background: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+
+    .status-processing {
+      background: #d1ecf1;
+      color: #0c5460;
+      border: 1px solid #bee5eb;
+    }
+
+    .status-unknown {
+      background: #e2e3e5;
+      color: #383d41;
+      border: 1px solid #d6d8db;
+    }
+
+    .status-disconnected {
+      background: #f8f9fa;
+      color: #666;
+      border: 1px solid #e9ecef;
+    }
+
     .shared-controls {
       display: flex;
       gap: 10px;
@@ -543,6 +583,27 @@
 
     .shared-controls button {
       min-width: 120px;
+    }
+
+    .stop-btn {
+      background: #f44336;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: bold;
+      padding: 12px 24px;
+      min-width: 120px;
+    }
+
+    .stop-btn:hover {
+      background: #d32f2f;
+    }
+
+    .stop-btn:disabled {
+      background: #cccccc;
+      cursor: not-allowed;
     }
 
     .debug-btn {
@@ -615,6 +676,7 @@
           <option value="fable">Fable (Juniper)</option>
         </select>
         <button id="readBtn">Read Article</button>
+        <button id="stopBtn" class="stop-btn" style="display: none;">Stop</button>
       </div>
 
       <!-- Tab content -->
@@ -700,6 +762,9 @@
     const resetUsageBtn = document.getElementById("resetUsageBtn");
     const changeLimitBtn = document.getElementById("changeLimitBtn");
 
+    // Stop button
+    const stopBtn = document.getElementById("stopBtn");
+
     // Tab system elements
     const tabButtons = document.querySelectorAll('.tab-button');
     const tabContents = document.querySelectorAll('.tab-content');
@@ -739,6 +804,9 @@
     });
 
     refreshHistoryBtn.onclick = loadHistory;
+
+    // Stop button handler
+    stopBtn.onclick = stopStreaming;
 
     // Update voice options based on selected service
     serviceSelect.onchange = updateVoiceOptions;
@@ -989,31 +1057,45 @@
         return;
       }
 
-      requestsList.innerHTML = requests.map(request => `
-        <div class="request-item">
-          <div class="request-header">
-            <a href="${request.url}" target="_blank" class="request-url">${request.url}</a>
-            <div class="request-meta">
-              ${formatTimestamp(request.timestamp)}
+      requestsList.innerHTML = requests.map(request => {
+        const statusClass = request.status === 'completed' ? 'status-completed' :
+          request.status === 'stopped' ? 'status-stopped' :
+            request.status === 'processing' ? 'status-processing' :
+              request.status === 'disconnected' ? 'status-disconnected' : 'status-unknown';
+
+        const statusText = request.status === 'completed' ? 'Completed' :
+          request.status === 'stopped' ? 'Stopped' :
+            request.status === 'processing' ? 'Processing' :
+              request.status === 'disconnected' ? 'Disconnected' : 'Unknown';
+
+        return `
+          <div class="request-item">
+            <div class="request-header">
+              <a href="${request.url}" target="_blank" class="request-url">${request.url}</a>
+              <div class="request-meta">
+                <span class="status-badge ${statusClass}">${statusText}</span>
+                <br>
+                ${formatTimestamp(request.timestamp)}
+              </div>
+            </div>
+            <div class="request-details">
+              <span>Service: ${request.service === 'openai' ? 'OpenAI TTS' : 'AWS Polly'}</span>
+              <span>Voice: ${request.voice}</span>
+              <span>Chunks: ${request.totalChunks}</span>
+              <span>Duration: ${formatTime(request.totalDuration)}</span>
+              <span class="cost-info">Cost: $${request.cost.toFixed(4)}</span>
+            </div>
+            <div class="request-actions">
+              <button class="play-btn" onclick="playRequestAudio('${request.sessionId}', '${request.combinedAudioUrl}')">
+                Play Audio
+              </button>
+            </div>
+            <div id="audio-${request.sessionId}" class="request-audio">
+              <audio controls src="${request.combinedAudioUrl}"></audio>
             </div>
           </div>
-          <div class="request-details">
-            <span>Service: ${request.service === 'openai' ? 'OpenAI TTS' : 'AWS Polly'}</span>
-            <span>Voice: ${request.voice}</span>
-            <span>Chunks: ${request.totalChunks}</span>
-            <span>Duration: ${formatTime(request.totalDuration)}</span>
-            <span class="cost-info">Cost: $${request.cost.toFixed(4)}</span>
-          </div>
-          <div class="request-actions">
-            <button class="play-btn" onclick="playRequestAudio('${request.sessionId}', '${request.combinedAudioUrl}')">
-              Play Full Audio
-            </button>
-          </div>
-          <div id="audio-${request.sessionId}" class="request-audio">
-            <audio controls src="${request.combinedAudioUrl}"></audio>
-          </div>
-        </div>
-      `).join('');
+        `;
+      }).join('');
     }
 
     function playRequestAudio(sessionId, audioUrl) {
@@ -1100,8 +1182,11 @@
       updateNavigationControls();
       updateStatus("loading", "Loading article...");
 
+      // Show stop button and hide read button
+      readBtn.style.display = "none";
+      stopBtn.style.display = "inline-block";
       readBtn.disabled = true;
-      readBtn.textContent = "Loading...";
+      stopBtn.disabled = false;
 
       // Build streaming URL with query params
       const streamUrl = new URL(endpoint, window.location.origin);
@@ -1147,9 +1232,7 @@
       eventSource.addEventListener("end", () => {
         console.log("Streaming ended");
         eventSource.close();
-        readBtn.disabled = false;
-        const activeTab = document.querySelector('.tab-button.active').getAttribute('data-tab');
-        readBtn.textContent = activeTab === 'pdf' ? "Read PDF" : "Read Article";
+        resetButtonState();
         isStreaming = false;
         updateStatus("complete", "Audio generation complete!");
         updateChunkInfo();
@@ -1192,11 +1275,89 @@
         }
 
         eventSource.close();
-        readBtn.disabled = false;
-        const activeTab = document.querySelector('.tab-button.active').getAttribute('data-tab');
-        readBtn.textContent = activeTab === 'pdf' ? "Read PDF" : "Read Article";
+        resetButtonState();
         updateStatus("loading", "Error occurred");
       });
+
+      eventSource.addEventListener("stop", (event) => {
+        console.log("Streaming stopped by server");
+        eventSource.close();
+        resetButtonState();
+        updateStatus("loading", "Streaming stopped by user request");
+
+        // Stop audio playback
+        if (player.src) {
+          player.pause();
+          player.src = "";
+        }
+
+        // Refresh history to show the partial completion
+        loadHistory();
+        loadUsage();
+      });
+    }
+
+    function stopStreaming() {
+      if (eventSource) {
+        console.log("Stopping streaming...");
+        eventSource.close();
+        eventSource = null;
+      }
+
+      // Stop audio playback
+      if (player.src) {
+        player.pause();
+        player.src = "";
+      }
+
+      // Reset state
+      isStreaming = false;
+      isPlaying = false;
+      shouldAutoPlay = false;
+      audioQueue = [];
+      currentChunkIndex = 0;
+      playedDuration = 0;
+      combinedAudioUrl = null;
+      isTransitioningToFullAudio = false;
+
+      // Reset UI
+      resetButtonState();
+      updateStatus("loading", "Request cancelled");
+      updateDisplay();
+      updateNavigationControls();
+      updateChunkInfo();
+      showChunkUI(); // Reset to chunk UI state
+
+      // Notify backend about the stop request (for logging)
+      fetch('/api/stop', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ session_id: currentSessionId })
+      }).then(() => {
+        // Refresh history to show any partial completion
+        loadHistory();
+        loadUsage();
+      }).catch(e => console.log('Failed to notify backend about stop:', e));
+    }
+
+    function resetButtonState() {
+      // Hide stop button and show read button
+      stopBtn.style.display = "none";
+      readBtn.style.display = "inline-block";
+      readBtn.disabled = false;
+      stopBtn.disabled = true;
+
+      // Update button text based on active tab
+      const activeTab = document.querySelector('.tab-button.active').getAttribute('data-tab');
+      if (activeTab === 'pdf') {
+        readBtn.textContent = 'Read PDF';
+        readBtn.disabled = !currentPdfFilename; // Disable if no PDF uploaded
+      } else {
+        readBtn.textContent = 'Read Article';
+        readBtn.disabled = false; // Enable for URL mode
+      }
     }
 
     function playCurrentChunk() {

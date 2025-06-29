@@ -40,6 +40,9 @@ audio_requests = {}
 # Store for PDF text files (session_id -> file_path)
 pdf_text_files = {}
 
+# Track active streaming sessions for stop functionality
+active_streaming_sessions = {}
+
 # Usage tracking
 USAGE_LIMIT = float(os.getenv("USAGE_LIMIT", "10"))  # Configurable usage limit
 current_usage = 0.0  # Track current usage in dollars
@@ -340,6 +343,7 @@ def get_requests():
                 "totalChunks": request_data["totalChunks"],
                 "totalDuration": request_data["totalDuration"],
                 "cost": request_data.get("cost", 0),
+                "status": request_data.get("status", "unknown"),
                 "combinedAudioUrl": f"/static/combined_{session_id}.mp3",
             }
         )
@@ -648,6 +652,7 @@ def check_usage_and_initialize_request(text, service, voice, source_url):
         "totalChunks": 0,
         "totalDuration": 0,
         "cost": 0.0,
+        "status": "processing",
     }
 
     return chunks, session_id
@@ -683,6 +688,7 @@ def finalize_audio_request(chunk_files, session_id, total_cost, total_duration_s
     audio_requests[session_id]["totalChunks"] = len(chunk_files)
     audio_requests[session_id]["totalDuration"] = total_duration_so_far
     audio_requests[session_id]["cost"] = total_cost
+    audio_requests[session_id]["status"] = "completed"
 
     print(f"[DEBUG] Total cost for this request: ${total_cost:.4f}")
     print("[DEBUG] Streaming complete.")
@@ -700,6 +706,7 @@ def generate_streaming_audio(source_type, voice, service, url=None):
     Yields:
         str: Server-sent events data for streaming audio chunks
     """
+    session_id = None
     try:
         # Validate request
         validate_streaming_request(service, source_type)
@@ -716,68 +723,150 @@ def generate_streaming_audio(source_type, voice, service, url=None):
             text, service, voice, source_url
         )
 
+        # Register this session for stop functionality
+        active_streaming_sessions[session_id] = {
+            "stop_requested": False,
+            "created_time": time.time(),
+        }
+        print(f"[DEBUG] Session {session_id} registered for streaming")
+
+        # Clean up old sessions periodically
+        cleanup_old_sessions()
+
         # Process audio chunks and yield streaming data
         chunk_files = []
         total_cost = 0.0
 
-        for idx, chunk in enumerate(chunks):
+        try:
+            for idx, chunk in enumerate(chunks):
+                # Check if this session should be stopped
+                if should_stop_session(session_id):
+                    print(
+                        f"[DEBUG] Session {session_id} stop requested, terminating streaming"
+                    )
+
+                    # Save partial results if we have any chunks
+                    if chunk_files:
+                        print(
+                            f"[DEBUG] Saving partial results: {len(chunk_files)} chunks generated"
+                        )
+                        partial_cost = sum(
+                            calculate_cost(service, len(chunks[i]))
+                            for i in range(len(chunk_files))
+                        )
+                        partial_duration = sum(
+                            AudioSegment.from_file(f, format="mp3").duration_seconds
+                            for f in chunk_files
+                        )
+
+                        # Create combined audio from partial chunks
+                        combined_audio_path = f"static/combined_{session_id}.mp3"
+                        combine_audio_chunks(chunk_files, combined_audio_path)
+
+                        # Update usage and request data for partial completion
+                        update_usage(partial_cost)
+                        audio_requests[session_id]["totalChunks"] = len(chunk_files)
+                        audio_requests[session_id]["totalDuration"] = partial_duration
+                        audio_requests[session_id]["cost"] = partial_cost
+                        audio_requests[session_id]["status"] = "stopped"
+
+                        print(
+                            f"[DEBUG] Partial completion saved: {len(chunk_files)} chunks, ${partial_cost:.4f} cost"
+                        )
+
+                    yield f"event: stop\ndata: {json.dumps({'message': 'Streaming stopped by user request', 'partialChunks': len(chunk_files)})}\n\n"
+                    return
+
+                print(
+                    f"[DEBUG] Synthesizing chunk {idx + 1}/{len(chunks)} with {service}..."
+                )
+
+                # Calculate cost for this chunk
+                chunk_cost = calculate_cost(service, len(chunk))
+                total_cost += chunk_cost
+
+                # Synthesize speech based on selected service
+                try:
+                    if service == "openai":
+                        audio_bytes = synthesize_with_openai(chunk, voice)
+                    else:  # polly
+                        audio_bytes = synthesize_with_polly(chunk, voice)
+                except Exception as e:
+                    print(f"[ERROR] TTS synthesis failed for chunk {idx + 1}: {e}")
+                    raise Exception(f"TTS synthesis failed: {str(e)}")
+
+                print("[DEBUG] TTS request complete, saving audio...")
+                audio_segment = AudioSegment.from_file(
+                    BytesIO(audio_bytes), format="mp3"
+                )
+                duration_sec = audio_segment.duration_seconds
+
+                # Save individual chunk to file
+                chunk_filename = f"static/chunk_{session_id}_{idx}.mp3"
+                with open(chunk_filename, "wb") as f:
+                    f.write(audio_bytes)
+
+                chunk_files.append(chunk_filename)
+
+                # Calculate total duration so far
+                total_duration_so_far = sum(
+                    AudioSegment.from_file(f, format="mp3").duration_seconds
+                    for f in chunk_files
+                )
+
+                print(f"[DEBUG] Audio saved as {chunk_filename}")
+
+                # Send individual chunk URL and metadata to frontend
+                data = {
+                    "audioUrl": "/" + chunk_filename,
+                    "chunkDuration": duration_sec,
+                    "totalDuration": total_duration_so_far,
+                    "chunkIndex": idx,
+                    "totalChunks": len(chunks),
+                    "sessionId": session_id,
+                }
+                yield f"data: {json.dumps(data)}\n\n"
+
+                # Short delay to pace the stream
+                time.sleep(0.5)
+
+            # Finalize the request
+            finalize_audio_request(
+                chunk_files, session_id, total_cost, total_duration_so_far
+            )
+
+            yield "event: end\ndata: {}\n\n"
+
+        except GeneratorExit:
+            # Client disconnected unexpectedly, save partial results
             print(
-                f"[DEBUG] Synthesizing chunk {idx + 1}/{len(chunks)} with {service}..."
+                f"[DEBUG] Client disconnected for session {session_id}, saving partial results"
             )
+            if chunk_files:
+                partial_cost = sum(
+                    calculate_cost(service, len(chunks[i]))
+                    for i in range(len(chunk_files))
+                )
+                partial_duration = sum(
+                    AudioSegment.from_file(f, format="mp3").duration_seconds
+                    for f in chunk_files
+                )
 
-            # Calculate cost for this chunk
-            chunk_cost = calculate_cost(service, len(chunk))
-            total_cost += chunk_cost
+                # Create combined audio from partial chunks
+                combined_audio_path = f"static/combined_{session_id}.mp3"
+                combine_audio_chunks(chunk_files, combined_audio_path)
 
-            # Synthesize speech based on selected service
-            try:
-                if service == "openai":
-                    audio_bytes = synthesize_with_openai(chunk, voice)
-                else:  # polly
-                    audio_bytes = synthesize_with_polly(chunk, voice)
-            except Exception as e:
-                print(f"[ERROR] TTS synthesis failed for chunk {idx + 1}: {e}")
-                raise Exception(f"TTS synthesis failed: {str(e)}")
+                # Update usage and request data for partial completion
+                update_usage(partial_cost)
+                audio_requests[session_id]["totalChunks"] = len(chunk_files)
+                audio_requests[session_id]["totalDuration"] = partial_duration
+                audio_requests[session_id]["cost"] = partial_cost
+                audio_requests[session_id]["status"] = "disconnected"
 
-            print("[DEBUG] TTS request complete, saving audio...")
-            audio_segment = AudioSegment.from_file(BytesIO(audio_bytes), format="mp3")
-            duration_sec = audio_segment.duration_seconds
-
-            # Save individual chunk to file
-            chunk_filename = f"static/chunk_{session_id}_{idx}.mp3"
-            with open(chunk_filename, "wb") as f:
-                f.write(audio_bytes)
-
-            chunk_files.append(chunk_filename)
-
-            # Calculate total duration so far
-            total_duration_so_far = sum(
-                AudioSegment.from_file(f, format="mp3").duration_seconds
-                for f in chunk_files
-            )
-
-            print(f"[DEBUG] Audio saved as {chunk_filename}")
-
-            # Send individual chunk URL and metadata to frontend
-            data = {
-                "audioUrl": "/" + chunk_filename,
-                "chunkDuration": duration_sec,
-                "totalDuration": total_duration_so_far,
-                "chunkIndex": idx,
-                "totalChunks": len(chunks),
-                "sessionId": session_id,
-            }
-            yield f"data: {json.dumps(data)}\n\n"
-
-            # Short delay to pace the stream
-            time.sleep(0.5)
-
-        # Finalize the request
-        finalize_audio_request(
-            chunk_files, session_id, total_cost, total_duration_so_far
-        )
-
-        yield "event: end\ndata: {}\n\n"
+                print(
+                    f"[DEBUG] Partial completion saved after disconnect: {len(chunk_files)} chunks, ${partial_cost:.4f} cost"
+                )
+            raise  # Re-raise to ensure proper cleanup
 
     except Exception as e:
         print("[ERROR] Exception occurred:", str(e))
@@ -786,6 +875,10 @@ def generate_streaming_audio(source_type, voice, service, url=None):
         traceback.print_exc()
         error_data = {"error": str(e)}
         yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
+    finally:
+        # Always clean up the session
+        if session_id:
+            cleanup_session(session_id)
 
 
 @app.route("/stream-read", methods=["GET"])
@@ -1007,6 +1100,105 @@ def test_session():
             ),
             500,
         )
+
+
+def stop_session(session_id):
+    """Mark a session for stopping"""
+    active_streaming_sessions[session_id] = {"stop_requested": True}
+    print(f"[DEBUG] Session {session_id} marked for stopping")
+
+
+def should_stop_session(session_id):
+    """Check if a session should be stopped"""
+    session_data = active_streaming_sessions.get(session_id)
+    return session_data and session_data.get("stop_requested", False)
+
+
+def cleanup_session(session_id):
+    """Clean up session data"""
+    active_streaming_sessions.pop(session_id, None)
+    print(f"[DEBUG] Session {session_id} cleaned up")
+
+
+def cleanup_old_sessions():
+    """Clean up sessions older than 1 hour to prevent memory leaks"""
+    try:
+        current_time = time.time()
+        sessions_to_remove = []
+
+        for session_id, session_data in active_streaming_sessions.items():
+            # If session has been active for more than 1 hour, mark for removal
+            if current_time - session_data.get("created_time", current_time) > 3600:
+                sessions_to_remove.append(session_id)
+
+        for session_id in sessions_to_remove:
+            cleanup_session(session_id)
+
+        if sessions_to_remove:
+            print(f"[DEBUG] Cleaned up {len(sessions_to_remove)} old sessions")
+
+    except Exception as e:
+        print(f"[WARNING] Error during session cleanup: {e}")
+
+
+@app.route("/api/stop", methods=["POST"])
+def stop_request():
+    """Stop endpoint - forcefully stop all active streaming sessions"""
+    try:
+        data = request.get_json() or {}
+        session_id = data.get("session_id")
+
+        if session_id:
+            # Stop specific session
+            stop_session(session_id)
+            print(f"[DEBUG] Stop request received for session: {session_id}")
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"Stop request received for session {session_id}",
+                }
+            )
+        else:
+            # Stop all active sessions
+            for sid in list(active_streaming_sessions.keys()):
+                stop_session(sid)
+            print(f"[DEBUG] Stop request received for all sessions")
+            return jsonify(
+                {"success": True, "message": "Stop request received for all sessions"}
+            )
+
+    except Exception as e:
+        print(f"[ERROR] Error in stop request: {e}")
+        return jsonify({"success": False, "message": f"Error: {str(e)}"}), 500
+
+
+@app.route("/api/active-sessions", methods=["GET"])
+def get_active_sessions():
+    """Get information about active streaming sessions (for debugging)"""
+    try:
+        # Clean up old sessions first
+        cleanup_old_sessions()
+
+        sessions_info = {}
+        for session_id, session_data in active_streaming_sessions.items():
+            sessions_info[session_id] = {
+                "stop_requested": session_data.get("stop_requested", False),
+                "created_time": session_data.get("created_time", 0),
+                "age_seconds": time.time()
+                - session_data.get("created_time", time.time()),
+            }
+
+        return jsonify(
+            {
+                "success": True,
+                "active_sessions": sessions_info,
+                "total_sessions": len(sessions_info),
+            }
+        )
+
+    except Exception as e:
+        print(f"[ERROR] Error getting active sessions: {e}")
+        return jsonify({"success": False, "message": f"Error: {str(e)}"}), 500
 
 
 if __name__ == "__main__":
