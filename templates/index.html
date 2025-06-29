@@ -6,7 +6,7 @@
   <style>
     body {
       font-family: Arial, sans-serif;
-      max-width: 800px;
+      max-width: 1000px;
       margin: 0 auto;
       padding: 20px;
       background-color: #f5f5f5;
@@ -17,6 +17,7 @@
       padding: 30px;
       border-radius: 10px;
       box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      margin-bottom: 20px;
     }
 
     h2 {
@@ -205,6 +206,108 @@
       font-weight: bold;
       margin-bottom: 15px;
     }
+
+    .history-section {
+      margin-top: 30px;
+    }
+
+    .history-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .refresh-btn {
+      background: #2196F3;
+      padding: 8px 16px;
+      font-size: 12px;
+    }
+
+    .refresh-btn:hover {
+      background: #1976D2;
+    }
+
+    .request-item {
+      background: #f8f9fa;
+      border: 1px solid #e9ecef;
+      border-radius: 8px;
+      padding: 15px;
+      margin-bottom: 15px;
+      transition: box-shadow 0.3s;
+    }
+
+    .request-item:hover {
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    }
+
+    .request-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 10px;
+    }
+
+    .request-url {
+      color: #007bff;
+      text-decoration: none;
+      font-weight: bold;
+      word-break: break-all;
+      flex: 1;
+      margin-right: 15px;
+    }
+
+    .request-url:hover {
+      text-decoration: underline;
+    }
+
+    .request-meta {
+      text-align: right;
+      font-size: 12px;
+      color: #666;
+      min-width: 120px;
+    }
+
+    .request-details {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      font-size: 14px;
+      color: #555;
+    }
+
+    .request-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .play-btn {
+      background: #28a745;
+      padding: 8px 16px;
+      font-size: 12px;
+    }
+
+    .play-btn:hover {
+      background: #218838;
+    }
+
+    .request-audio {
+      margin-top: 10px;
+      display: none;
+    }
+
+    .request-audio.show {
+      display: block;
+    }
+
+    .no-requests {
+      text-align: center;
+      color: #666;
+      font-style: italic;
+      padding: 40px;
+    }
   </style>
 </head>
 
@@ -250,6 +353,14 @@
     </div>
   </div>
 
+  <div class="container history-section">
+    <div class="history-header">
+      <h3>Past Audio Requests</h3>
+      <button id="refreshHistoryBtn" class="refresh-btn">Refresh</button>
+    </div>
+    <div id="requestsList"></div>
+  </div>
+
   <script>
     const readBtn = document.getElementById("readBtn");
     const urlInput = document.getElementById("url");
@@ -265,6 +376,8 @@
     const chunkIndicator = document.getElementById("chunkIndicator");
     const fullAudioContainer = document.getElementById("fullAudioContainer");
     const fullAudioPlayer = document.getElementById("fullAudioPlayer");
+    const refreshHistoryBtn = document.getElementById("refreshHistoryBtn");
+    const requestsList = document.getElementById("requestsList");
 
     let eventSource = null;
     let currentSessionId = null;
@@ -276,6 +389,76 @@
     let shouldAutoPlay = false;
     let playedDuration = 0; // Total duration of completed chunks
     let combinedAudioUrl = null; // URL for the complete audio when streaming ends
+
+    // Load history on page load
+    document.addEventListener('DOMContentLoaded', loadHistory);
+
+    refreshHistoryBtn.onclick = loadHistory;
+
+    async function loadHistory() {
+      try {
+        const response = await fetch('/api/requests');
+        const requests = await response.json();
+        displayRequests(requests);
+      } catch (error) {
+        console.error('Error loading history:', error);
+        requestsList.innerHTML = '<div class="no-requests">Error loading history</div>';
+      }
+    }
+
+    function displayRequests(requests) {
+      if (requests.length === 0) {
+        requestsList.innerHTML = '<div class="no-requests">No past requests found</div>';
+        return;
+      }
+
+      requestsList.innerHTML = requests.map(request => `
+        <div class="request-item">
+          <div class="request-header">
+            <a href="${request.url}" target="_blank" class="request-url">${request.url}</a>
+            <div class="request-meta">
+              ${formatTimestamp(request.timestamp)}
+            </div>
+          </div>
+          <div class="request-details">
+            <span>Voice: ${request.voice}</span>
+            <span>Chunks: ${request.totalChunks}</span>
+            <span>Duration: ${formatTime(request.totalDuration)}</span>
+          </div>
+          <div class="request-actions">
+            <button class="play-btn" onclick="playRequestAudio('${request.sessionId}', '${request.combinedAudioUrl}')">
+              Play Full Audio
+            </button>
+          </div>
+          <div id="audio-${request.sessionId}" class="request-audio">
+            <audio controls src="${request.combinedAudioUrl}"></audio>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function playRequestAudio(sessionId, audioUrl) {
+      const audioContainer = document.getElementById(`audio-${sessionId}`);
+      const audioElement = audioContainer.querySelector('audio');
+
+      if (audioContainer.classList.contains('show')) {
+        audioContainer.classList.remove('show');
+      } else {
+        // Hide all other audio players
+        document.querySelectorAll('.request-audio').forEach(container => {
+          container.classList.remove('show');
+        });
+
+        // Show this audio player
+        audioContainer.classList.add('show');
+        audioElement.play().catch(e => console.log('Auto-play prevented:', e));
+      }
+    }
+
+    function formatTimestamp(timestamp) {
+      const date = new Date(timestamp);
+      return date.toLocaleString();
+    }
 
     readBtn.onclick = () => {
       const articleUrl = urlInput.value.trim();
@@ -359,6 +542,9 @@
           combinedAudioUrl = `/static/combined_${currentSessionId}.mp3`;
           showFullAudio();
         }
+
+        // Refresh history to show the new request
+        loadHistory();
       });
 
       eventSource.addEventListener("error", (event) => {

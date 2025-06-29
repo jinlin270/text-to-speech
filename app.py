@@ -1,4 +1,11 @@
-from flask import Flask, request, Response, stream_with_context, render_template
+from flask import (
+    Flask,
+    request,
+    Response,
+    stream_with_context,
+    render_template,
+    jsonify,
+)
 import openai
 from newspaper import Article
 import time
@@ -10,10 +17,13 @@ import yaml
 from pydub import AudioSegment
 from flask_cors import CORS
 import glob
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)  # allow cross-origin if frontend is hosted separately
 
+# Store for past audio requests
+audio_requests = {}
 
 # def load_secrets(path="secrets.yml"):
 #     with open(path, "r") as file:
@@ -28,6 +38,28 @@ os.makedirs("static", exist_ok=True)
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/api/requests", methods=["GET"])
+def get_requests():
+    """Get all past audio requests"""
+    requests_list = []
+    for session_id, request_data in audio_requests.items():
+        requests_list.append(
+            {
+                "sessionId": session_id,
+                "url": request_data["url"],
+                "voice": request_data["voice"],
+                "timestamp": request_data["timestamp"],
+                "totalChunks": request_data["totalChunks"],
+                "totalDuration": request_data["totalDuration"],
+                "combinedAudioUrl": f"/static/combined_{session_id}.mp3",
+            }
+        )
+
+    # Sort by timestamp (newest first)
+    requests_list.sort(key=lambda x: x["timestamp"], reverse=True)
+    return jsonify(requests_list)
 
 
 def chunk_text(text, max_chars=500):
@@ -93,6 +125,15 @@ def stream_read():
         session_id = uuid.uuid4().hex
         combined_audio_path = f"static/combined_{session_id}.mp3"
 
+        # Initialize request data
+        audio_requests[session_id] = {
+            "url": url,
+            "voice": voice,
+            "timestamp": datetime.now().isoformat(),
+            "totalChunks": 0,
+            "totalDuration": 0,
+        }
+
         try:
             print("[DEBUG] Starting article parsing...")
             article = Article(url)
@@ -156,6 +197,19 @@ def stream_read():
             print("[DEBUG] Creating combined audio file...")
             combine_audio_chunks(chunk_files, combined_audio_path)
             print(f"[DEBUG] Combined audio saved as {combined_audio_path}")
+
+            # Remove individual chunk files to save disk space
+            print("[DEBUG] Cleaning up individual chunk files...")
+            for chunk_file in chunk_files:
+                try:
+                    os.remove(chunk_file)
+                    print(f"[DEBUG] Removed chunk file: {chunk_file}")
+                except Exception as e:
+                    print(f"[WARNING] Failed to remove chunk file {chunk_file}: {e}")
+
+            # Update request data with final information
+            audio_requests[session_id]["totalChunks"] = len(chunks)
+            audio_requests[session_id]["totalDuration"] = total_duration_so_far
 
             print("[DEBUG] Streaming complete.")
             yield "event: end\ndata: {}\n\n"
