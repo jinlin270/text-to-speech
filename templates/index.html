@@ -26,6 +26,91 @@
       margin-bottom: 30px;
     }
 
+    .header-section {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 15px;
+    }
+
+    .usage-info {
+      background: #e3f2fd;
+      padding: 15px;
+      border-radius: 8px;
+      border: 1px solid #2196F3;
+      min-width: 200px;
+    }
+
+    .usage-info h4 {
+      margin: 0 0 10px 0;
+      color: #1976d2;
+    }
+
+    .usage-bar {
+      width: 100%;
+      height: 8px;
+      background: #ddd;
+      border-radius: 4px;
+      overflow: hidden;
+      margin: 5px 0;
+    }
+
+    .usage-progress {
+      height: 100%;
+      background: linear-gradient(90deg, #4caf50, #ff9800, #f44336);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+
+    .usage-text {
+      font-size: 12px;
+      color: #666;
+      text-align: center;
+    }
+
+    .auth-section {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .login-form {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .login-form input {
+      padding: 6px 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .auth-btn {
+      padding: 6px 12px;
+      font-size: 12px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .login-btn {
+      background: #4caf50;
+      color: white;
+    }
+
+    .logout-btn {
+      background: #f44336;
+      color: white;
+    }
+
+    .auth-btn:hover {
+      opacity: 0.8;
+    }
+
     .input-group {
       display: flex;
       gap: 10px;
@@ -275,6 +360,8 @@
       margin-bottom: 10px;
       font-size: 14px;
       color: #555;
+      flex-wrap: wrap;
+      gap: 10px;
     }
 
     .request-actions {
@@ -308,12 +395,48 @@
       font-style: italic;
       padding: 40px;
     }
+
+    .cost-info {
+      background: #fff3cd;
+      border: 1px solid #ffeaa7;
+      border-radius: 4px;
+      padding: 8px 12px;
+      font-size: 12px;
+      color: #856404;
+    }
   </style>
 </head>
 
 <body>
   <div class="container">
     <h2>Streaming TTS Reader</h2>
+
+    <div class="header-section">
+      <div class="usage-info">
+        <h4>Usage Limit</h4>
+        <div class="usage-bar">
+          <div id="usageProgress" class="usage-progress" style="width: 0%"></div>
+        </div>
+        <div id="usageText" class="usage-text">$0.00 / $15.00</div>
+        <div id="usageControls" style="display: none; margin-top: 10px;">
+          <button id="resetUsageBtn" class="auth-btn" style="background: #ff9800; margin-right: 5px;">Reset
+            Usage</button>
+          <button id="changeLimitBtn" class="auth-btn" style="background: #2196F3;">Change Limit</button>
+        </div>
+      </div>
+
+      <div class="auth-section">
+        <div id="loginSection" class="login-form">
+          <input type="text" id="username" placeholder="Username" />
+          <input type="password" id="password" placeholder="Password" />
+          <button id="loginBtn" class="auth-btn login-btn">Login</button>
+        </div>
+        <div id="logoutSection" style="display: none;">
+          <span id="userInfo">Logged in as Lin</span>
+          <button id="logoutBtn" class="auth-btn logout-btn">Logout</button>
+        </div>
+      </div>
+    </div>
 
     <div class="input-group">
       <input type="text" id="url" placeholder="Enter article URL" />
@@ -383,6 +506,16 @@
     const fullAudioPlayer = document.getElementById("fullAudioPlayer");
     const refreshHistoryBtn = document.getElementById("refreshHistoryBtn");
     const requestsList = document.getElementById("requestsList");
+    const usageProgress = document.getElementById("usageProgress");
+    const usageText = document.getElementById("usageText");
+    const loginBtn = document.getElementById("loginBtn");
+    const logoutBtn = document.getElementById("logoutBtn");
+    const loginSection = document.getElementById("loginSection");
+    const logoutSection = document.getElementById("logoutSection");
+    const userInfo = document.getElementById("userInfo");
+    const usageControls = document.getElementById("usageControls");
+    const resetUsageBtn = document.getElementById("resetUsageBtn");
+    const changeLimitBtn = document.getElementById("changeLimitBtn");
 
     let eventSource = null;
     let currentSessionId = null;
@@ -395,8 +528,11 @@
     let playedDuration = 0; // Total duration of completed chunks
     let combinedAudioUrl = null; // URL for the complete audio when streaming ends
 
-    // Load history on page load
-    document.addEventListener('DOMContentLoaded', loadHistory);
+    // Load history and usage on page load
+    document.addEventListener('DOMContentLoaded', () => {
+      loadHistory();
+      loadUsage();
+    });
 
     refreshHistoryBtn.onclick = loadHistory;
 
@@ -458,6 +594,180 @@
     // Initialize voice options
     updateVoiceOptions();
 
+    async function loadUsage() {
+      try {
+        const response = await fetch('/api/usage');
+        const usage = await response.json();
+        updateUsageDisplay(usage);
+        updateAuthDisplay(usage.isAuthenticated);
+      } catch (error) {
+        console.error('Error loading usage:', error);
+      }
+    }
+
+    function updateUsageDisplay(usage) {
+      const percentage = (usage.currentUsage / usage.usageLimit) * 100;
+      usageProgress.style.width = `${Math.min(percentage, 100)}%`;
+      usageText.textContent = `$${usage.currentUsage} / $${usage.usageLimit}`;
+
+      // Change color based on usage level
+      if (percentage > 80) {
+        usageProgress.style.background = '#f44336'; // Red
+      } else if (percentage > 60) {
+        usageProgress.style.background = '#ff9800'; // Orange
+      } else {
+        usageProgress.style.background = 'linear-gradient(90deg, #4caf50, #ff9800, #f44336)';
+      }
+    }
+
+    function updateAuthDisplay(isAuthenticated) {
+      if (isAuthenticated) {
+        loginSection.style.display = 'none';
+        logoutSection.style.display = 'flex';
+        usageControls.style.display = 'block';
+      } else {
+        loginSection.style.display = 'flex';
+        logoutSection.style.display = 'none';
+        usageControls.style.display = 'none';
+      }
+    }
+
+    loginBtn.onclick = async () => {
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+
+      if (!username || !password) {
+        alert('Please enter both username and password');
+        return;
+      }
+
+      // Show loading state
+      loginBtn.disabled = true;
+      loginBtn.textContent = 'Logging in...';
+
+      try {
+        console.log('Attempting login...');
+        const response = await fetch('/api/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ username, password })
+        });
+
+        console.log('Response status:', response.status);
+        console.log('Response headers:', response.headers);
+
+        const responseText = await response.text();
+        console.log('Response text:', responseText);
+
+        let result;
+        try {
+          result = JSON.parse(responseText);
+        } catch (e) {
+          console.error('Failed to parse JSON response:', responseText);
+          alert('Server returned invalid response. Check console for details.');
+          return;
+        }
+
+        if (result.success) {
+          alert('Login successful!');
+          loadUsage(); // Refresh usage to update auth status
+        } else {
+          alert('Login failed: ' + result.message);
+        }
+      } catch (error) {
+        console.error('Login error:', error);
+        alert('Login error: ' + error.message);
+      } finally {
+        // Reset button state
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Login';
+      }
+    };
+
+    logoutBtn.onclick = async () => {
+      try {
+        const response = await fetch('/api/logout', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          alert('Logout successful!');
+          loadUsage(); // Refresh usage to update auth status
+        }
+      } catch (error) {
+        alert('Logout error: ' + error.message);
+      }
+    };
+
+    resetUsageBtn.onclick = async () => {
+      if (!confirm('Are you sure you want to reset the usage to $0.00?')) {
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/usage', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ action: 'reset' })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          alert(result.message);
+          loadUsage(); // Refresh usage display
+        } else {
+          alert('Failed to reset usage: ' + result.message);
+        }
+      } catch (error) {
+        alert('Error resetting usage: ' + error.message);
+      }
+    };
+
+    changeLimitBtn.onclick = async () => {
+      const newLimit = prompt('Enter new usage limit (in dollars):', '15.00');
+
+      if (newLimit === null) {
+        return; // User cancelled
+      }
+
+      const limitValue = parseFloat(newLimit);
+      if (isNaN(limitValue) || limitValue < 0) {
+        alert('Please enter a valid positive number');
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/usage', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ action: 'set_limit', limit: limitValue })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          alert(result.message);
+          loadUsage(); // Refresh usage display
+        } else {
+          alert('Failed to change limit: ' + result.message);
+        }
+      } catch (error) {
+        alert('Error changing limit: ' + error.message);
+      }
+    };
+
     async function loadHistory() {
       try {
         const response = await fetch('/api/requests');
@@ -488,6 +798,7 @@
             <span>Voice: ${request.voice}</span>
             <span>Chunks: ${request.totalChunks}</span>
             <span>Duration: ${formatTime(request.totalDuration)}</span>
+            <span class="cost-info">Cost: $${request.cost.toFixed(4)}</span>
           </div>
           <div class="request-actions">
             <button class="play-btn" onclick="playRequestAudio('${request.sessionId}', '${request.combinedAudioUrl}')">
@@ -609,8 +920,9 @@
           showFullAudio();
         }
 
-        // Refresh history to show the new request
+        // Refresh history and usage to show the new request
         loadHistory();
+        loadUsage();
       });
 
       eventSource.addEventListener("error", (event) => {

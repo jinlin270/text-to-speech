@@ -5,6 +5,7 @@ from flask import (
     stream_with_context,
     render_template,
     jsonify,
+    session,
 )
 import openai
 from newspaper import Article
@@ -20,12 +21,30 @@ import glob
 from datetime import datetime
 import boto3
 from botocore.exceptions import ClientError
+import hashlib
+import secrets
 
 app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 CORS(app)  # allow cross-origin if frontend is hosted separately
 
 # Store for past audio requests
 audio_requests = {}
+
+# Usage tracking
+USAGE_LIMIT = float(os.getenv("USAGE_LIMIT", "0.01"))  # Configurable usage limit
+current_usage = 0.0  # Track current usage in dollars
+
+# Cost per character (in dollars)
+COSTS = {
+    "openai": 0.015 / 1000,  # $0.015 per 1K characters
+    "polly": 0.004 / 1000,  # $0.004 per 1K characters
+}
+
+# Login attempt tracking (simple rate limiting)
+login_attempts = {}
+MAX_LOGIN_ATTEMPTS = 5
+LOGIN_TIMEOUT = 300  # 5 minutes
 
 # def load_secrets(path="secrets.yml"):
 #     with open(path, "r") as file:
@@ -57,9 +76,240 @@ if aws_access_key_id and aws_secret_access_key:
 os.makedirs("static", exist_ok=True)
 
 
+def hash_password(password):
+    """Hash password using SHA-256 with salt"""
+    salt = os.getenv("PASSWORD_SALT", "default_salt_change_this")
+    return hashlib.sha256((password + salt).encode()).hexdigest()
+
+
+def check_login_attempts(ip):
+    """Check if IP has exceeded login attempts"""
+    global login_attempts
+    current_time = time.time()
+
+    # Clean up old attempts
+    login_attempts = {
+        ip: data
+        for ip, data in login_attempts.items()
+        if current_time - data["timestamp"] < LOGIN_TIMEOUT
+    }
+
+    if ip in login_attempts:
+        attempts = login_attempts[ip]["count"]
+        if attempts >= MAX_LOGIN_ATTEMPTS:
+            return False
+    return True
+
+
+def record_login_attempt(ip, success):
+    """Record login attempt"""
+    global login_attempts
+    current_time = time.time()
+
+    if ip not in login_attempts:
+        login_attempts[ip] = {"count": 0, "timestamp": current_time}
+
+    if not success:
+        login_attempts[ip]["count"] += 1
+        login_attempts[ip]["timestamp"] = current_time
+    else:
+        # Reset on successful login
+        login_attempts.pop(ip, None)
+
+
+def check_usage_limit(service, text_length):
+    """Check if usage would exceed the $15 limit"""
+    if session.get("authenticated_user") == "lin":
+        return True  # Lin can bypass the limit
+
+    cost = COSTS[service] * text_length
+    if current_usage + cost > USAGE_LIMIT:
+        return False
+    return True
+
+
+def calculate_cost(service, text_length):
+    """Calculate cost for text synthesis"""
+    return COSTS[service] * text_length
+
+
+def update_usage(cost):
+    """Update current usage"""
+    global current_usage
+    current_usage += cost
+    print(f"[DEBUG] Usage updated: ${current_usage:.4f}")
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/api/test", methods=["GET"])
+def test():
+    """Simple test endpoint"""
+    return jsonify(
+        {
+            "status": "ok",
+            "message": "Server is running",
+            "lin_password_set": bool(os.getenv("LIN_PASSWORD")),
+            "password_salt_set": bool(os.getenv("PASSWORD_SALT")),
+        }
+    )
+
+
+@app.route("/api/usage", methods=["GET"])
+def get_usage():
+    """Get current usage information"""
+    return jsonify(
+        {
+            "currentUsage": round(current_usage, 4),
+            "usageLimit": USAGE_LIMIT,
+            "remaining": round(USAGE_LIMIT - current_usage, 4),
+            "isAuthenticated": session.get("authenticated_user") == "lin",
+        }
+    )
+
+
+@app.route("/api/usage", methods=["POST"])
+def update_usage():
+    """Update usage limit (Lin only)"""
+    if session.get("authenticated_user") != "lin":
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
+    data = request.get_json()
+    action = data.get("action")
+
+    global current_usage, USAGE_LIMIT
+
+    if action == "reset":
+        current_usage = 0.0
+        return jsonify(
+            {
+                "success": True,
+                "message": "Usage reset to $0.00",
+                "currentUsage": 0.0,
+                "usageLimit": USAGE_LIMIT,
+            }
+        )
+
+    elif action == "set_limit":
+        new_limit = data.get("limit")
+        if (
+            new_limit is None
+            or not isinstance(new_limit, (int, float))
+            or new_limit < 0
+        ):
+            return jsonify({"success": False, "message": "Invalid limit value"}), 400
+
+        USAGE_LIMIT = float(new_limit)
+        return jsonify(
+            {
+                "success": True,
+                "message": f"Usage limit set to ${new_limit}",
+                "currentUsage": current_usage,
+                "usageLimit": USAGE_LIMIT,
+            }
+        )
+
+    else:
+        return jsonify({"success": False, "message": "Invalid action"}), 400
+
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    """Login endpoint for Lin"""
+    try:
+        print("[DEBUG] Login attempt received")
+
+        # Get client IP for rate limiting
+        client_ip = request.remote_addr
+        print(f"[DEBUG] Client IP: {client_ip}")
+
+        # Check rate limiting
+        if not check_login_attempts(client_ip):
+            print(f"[DEBUG] Rate limit exceeded for IP: {client_ip}")
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": f"Too many login attempts. Please wait {LOGIN_TIMEOUT//60} minutes.",
+                    }
+                ),
+                429,
+            )
+
+        # Parse JSON data
+        try:
+            data = request.get_json()
+            print(f"[DEBUG] Request data: {data}")
+        except Exception as e:
+            print(f"[ERROR] Failed to parse JSON: {e}")
+            return jsonify({"success": False, "message": "Invalid JSON data"}), 400
+
+        if not data:
+            print("[DEBUG] No data provided")
+            return jsonify({"success": False, "message": "No data provided"}), 400
+
+        username = data.get("username")
+        password = data.get("password")
+
+        print(f"[DEBUG] Username: {username}")
+        print(f"[DEBUG] Password provided: {'Yes' if password else 'No'}")
+
+        if not username or not password:
+            print("[DEBUG] Missing username or password")
+            return (
+                jsonify(
+                    {"success": False, "message": "Username and password required"}
+                ),
+                400,
+            )
+
+        # Get password from environment variable
+        lin_password = os.getenv("LIN_PASSWORD")
+        if not lin_password:
+            print("[WARNING] LIN_PASSWORD environment variable not set")
+            return (
+                jsonify({"success": False, "message": "Authentication not configured"}),
+                500,
+            )
+
+        print(f"[DEBUG] Environment password set: {'Yes' if lin_password else 'No'}")
+
+        # Hash the provided password
+        hashed_password = hash_password(password)
+        hashed_env_password = hash_password(lin_password)
+
+        print(
+            f"[DEBUG] Password hashes match: {hashed_password == hashed_env_password}"
+        )
+
+        # Check if it's Lin with correct password
+        if username == "lin" and hashed_password == hashed_env_password:
+            print("[DEBUG] Login successful")
+            session["authenticated_user"] = "lin"
+            session["login_time"] = time.time()
+            record_login_attempt(client_ip, True)
+            return jsonify({"success": True, "message": "Login successful"})
+        else:
+            print("[DEBUG] Login failed - invalid credentials")
+            record_login_attempt(client_ip, False)
+            return jsonify({"success": False, "message": "Invalid credentials"}), 401
+
+    except Exception as e:
+        print(f"[ERROR] Login error: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return jsonify({"success": False, "message": "Internal server error"}), 500
+
+
+@app.route("/api/logout", methods=["POST"])
+def logout():
+    """Logout endpoint"""
+    session.clear()
+    return jsonify({"success": True, "message": "Logout successful"})
 
 
 @app.route("/api/requests", methods=["GET"])
@@ -76,6 +326,7 @@ def get_requests():
                 "timestamp": request_data["timestamp"],
                 "totalChunks": request_data["totalChunks"],
                 "totalDuration": request_data["totalDuration"],
+                "cost": request_data.get("cost", 0),
                 "combinedAudioUrl": f"/static/combined_{session_id}.mp3",
             }
         )
@@ -211,16 +462,7 @@ def stream_read():
         chunk_files = []
         session_id = uuid.uuid4().hex
         combined_audio_path = f"static/combined_{session_id}.mp3"
-
-        # Initialize request data
-        audio_requests[session_id] = {
-            "url": url,
-            "voice": voice,
-            "service": service,
-            "timestamp": datetime.now().isoformat(),
-            "totalChunks": 0,
-            "totalDuration": 0,
-        }
+        total_cost = 0.0
 
         try:
             print("[DEBUG] Starting article parsing...")
@@ -232,6 +474,27 @@ def stream_read():
 
             chunks = chunk_text(text)
             print(f"[DEBUG] Text split into {len(chunks)} chunk(s).")
+
+            # Check usage limit before processing
+            total_text_length = sum(len(chunk) for chunk in chunks)
+            estimated_cost = calculate_cost(service, total_text_length)
+
+            if not check_usage_limit(service, total_text_length):
+                error_msg = f"Usage limit exceeded. Estimated cost: ${estimated_cost:.4f}, Remaining: ${USAGE_LIMIT - current_usage:.4f}"
+                print(f"[ERROR] {error_msg}")
+                yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
+                return
+
+            # Initialize request data
+            audio_requests[session_id] = {
+                "url": url,
+                "voice": voice,
+                "service": service,
+                "timestamp": datetime.now().isoformat(),
+                "totalChunks": 0,
+                "totalDuration": 0,
+                "cost": 0.0,
+            }
 
             # Validate voice based on service
             if service == "openai":
@@ -264,6 +527,10 @@ def stream_read():
                 print(
                     f"[DEBUG] Synthesizing chunk {idx + 1}/{len(chunks)} with {service}..."
                 )
+
+                # Calculate cost for this chunk
+                chunk_cost = calculate_cost(service, len(chunk))
+                total_cost += chunk_cost
 
                 # Synthesize speech based on selected service
                 if service == "openai":
@@ -320,10 +587,13 @@ def stream_read():
                 except Exception as e:
                     print(f"[WARNING] Failed to remove chunk file {chunk_file}: {e}")
 
-            # Update request data with final information
+            # Update usage and request data
+            update_usage(total_cost)
             audio_requests[session_id]["totalChunks"] = len(chunks)
             audio_requests[session_id]["totalDuration"] = total_duration_so_far
+            audio_requests[session_id]["cost"] = total_cost
 
+            print(f"[DEBUG] Total cost for this request: ${total_cost:.4f}")
             print("[DEBUG] Streaming complete.")
             yield "event: end\ndata: {}\n\n"
 
