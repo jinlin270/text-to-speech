@@ -926,12 +926,23 @@
       });
 
       eventSource.addEventListener("error", (event) => {
-        try {
-          const errorData = JSON.parse(event.data);
-          alert("Error: " + errorData.error);
-        } catch {
-          alert("A streaming error occurred");
+        console.log("EventSource error event:", event);
+
+        // Try to parse error data if available
+        if (event.data) {
+          try {
+            const errorData = JSON.parse(event.data);
+            console.error("Streaming error:", errorData);
+            alert("Error: " + errorData.error);
+          } catch (e) {
+            console.error("Failed to parse error data:", event.data);
+            alert("A streaming error occurred. Check console for details.");
+          }
+        } else {
+          console.error("EventSource error without data");
+          alert("A streaming error occurred. Please check your internet connection and try again.");
         }
+
         eventSource.close();
         readBtn.disabled = false;
         readBtn.textContent = "Read Article";

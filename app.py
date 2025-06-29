@@ -154,6 +154,10 @@ def test():
             "message": "Server is running",
             "lin_password_set": bool(os.getenv("LIN_PASSWORD")),
             "password_salt_set": bool(os.getenv("PASSWORD_SALT")),
+            "openai_configured": bool(openai.api_key),
+            "aws_polly_configured": bool(polly_client),
+            "aws_credentials_set": bool(aws_access_key_id and aws_secret_access_key),
+            "aws_region": aws_region,
         }
     )
 
@@ -395,6 +399,8 @@ def synthesize_with_polly(text, voice):
         raise Exception("AWS Polly client not initialized")
 
     try:
+        print(f"[DEBUG] AWS Polly: Using voice '{voice}' for text length {len(text)}")
+
         # Map frontend voice names to Polly voice IDs
         voice_mapping = {
             "joanna": "Joanna",
@@ -410,6 +416,14 @@ def synthesize_with_polly(text, voice):
         }
 
         polly_voice = voice_mapping.get(voice, "Joanna")
+        print(f"[DEBUG] AWS Polly: Mapped voice '{voice}' to '{polly_voice}'")
+
+        # Check if text is too long for Polly (6000 characters limit)
+        if len(text) > 6000:
+            print(
+                f"[WARNING] Text too long for Polly ({len(text)} chars), truncating to 6000"
+            )
+            text = text[:6000]
 
         response = polly_client.synthesize_speech(
             Text=text,
@@ -418,13 +432,27 @@ def synthesize_with_polly(text, voice):
             Engine="neural",  # Use neural engine for better quality
         )
 
-        return response["AudioStream"].read()
+        audio_data = response["AudioStream"].read()
+        print(f"[DEBUG] AWS Polly: Successfully synthesized {len(audio_data)} bytes")
+        return audio_data
+
     except ClientError as e:
-        print(f"[ERROR] AWS Polly TTS failed: {e}")
-        raise Exception(f"AWS Polly error: {e}")
+        error_code = e.response["Error"]["Code"]
+        error_message = e.response["Error"]["Message"]
+        print(f"[ERROR] AWS Polly ClientError: {error_code} - {error_message}")
+
+        if error_code == "InvalidParameterValue":
+            raise Exception(f"Invalid voice or text parameter: {error_message}")
+        elif error_code == "TextLengthExceededException":
+            raise Exception(f"Text too long for AWS Polly: {error_message}")
+        elif error_code == "UnsupportedPlsAlphabetException":
+            raise Exception(f"Unsupported text format: {error_message}")
+        else:
+            raise Exception(f"AWS Polly error ({error_code}): {error_message}")
+
     except Exception as e:
         print(f"[ERROR] AWS Polly TTS failed: {e}")
-        raise
+        raise Exception(f"AWS Polly error: {str(e)}")
 
 
 @app.route("/stream-read", methods=["GET"])
@@ -451,9 +479,19 @@ def stream_read():
         print("[ERROR] OpenAI API key not configured")
         return Response("OpenAI service not configured", status=500)
 
-    if service == "polly" and not polly_client:
-        print("[ERROR] AWS Polly not configured")
-        return Response("AWS Polly service not configured", status=500)
+    if service == "polly":
+        if not polly_client:
+            print("[ERROR] AWS Polly not configured")
+            return Response(
+                "AWS Polly service not configured. Please check AWS credentials.",
+                status=500,
+            )
+        if not aws_access_key_id or not aws_secret_access_key:
+            print("[ERROR] AWS credentials not configured")
+            return Response(
+                "AWS credentials not configured. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.",
+                status=500,
+            )
 
     # Clean up old files before starting
     cleanup_old_audio_files()
@@ -466,10 +504,40 @@ def stream_read():
 
         try:
             print("[DEBUG] Starting article parsing...")
-            article = Article(url)
-            article.download()
-            article.parse()
+
+            # Add retry logic for article download
+            max_retries = 3
+            retry_delay = 2  # seconds
+
+            for attempt in range(max_retries):
+                try:
+                    article = Article(url)
+                    article.download()
+                    article.parse()
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    if "429" in str(e) or "Too Many Requests" in str(e):
+                        if attempt < max_retries - 1:
+                            print(
+                                f"[WARNING] Rate limited (attempt {attempt + 1}/{max_retries}). Waiting {retry_delay} seconds..."
+                            )
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff
+                            continue
+                        else:
+                            print("[ERROR] Rate limited after all retries")
+                            yield f"event: error\ndata: {json.dumps({'error': 'Website is rate limiting requests. Please try again later or use a different URL.'})}\n\n"
+                            return
+                    else:
+                        # Non-rate-limit error, don't retry
+                        raise e
+
             text = article.text
+            if not text or len(text.strip()) < 10:
+                print("[ERROR] No text content found")
+                yield f"event: error\ndata: {json.dumps({'error': 'No readable text content found on this page. Please try a different URL.'})}\n\n"
+                return
+
             print("[DEBUG] Article downloaded and parsed, text length:", len(text))
 
             chunks = chunk_text(text)
@@ -533,10 +601,15 @@ def stream_read():
                 total_cost += chunk_cost
 
                 # Synthesize speech based on selected service
-                if service == "openai":
-                    audio_bytes = synthesize_with_openai(chunk, voice)
-                else:  # polly
-                    audio_bytes = synthesize_with_polly(chunk, voice)
+                try:
+                    if service == "openai":
+                        audio_bytes = synthesize_with_openai(chunk, voice)
+                    else:  # polly
+                        audio_bytes = synthesize_with_polly(chunk, voice)
+                except Exception as e:
+                    print(f"[ERROR] TTS synthesis failed for chunk {idx + 1}: {e}")
+                    yield f"event: error\ndata: {json.dumps({'error': f'TTS synthesis failed: {str(e)}'})}\n\n"
+                    return
 
                 print("[DEBUG] TTS request complete, saving audio...")
                 audio_segment = AudioSegment.from_file(
