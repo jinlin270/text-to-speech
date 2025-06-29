@@ -317,6 +317,10 @@
 
     <div class="input-group">
       <input type="text" id="url" placeholder="Enter article URL" />
+      <select id="service">
+        <option value="openai">OpenAI TTS</option>
+        <option value="polly">AWS Polly (Cheaper)</option>
+      </select>
       <select id="voice">
         <option value="shimmer">Shimmer (Sky)</option>
         <option value="onyx">Onyx (Ember)</option>
@@ -364,6 +368,7 @@
   <script>
     const readBtn = document.getElementById("readBtn");
     const urlInput = document.getElementById("url");
+    const serviceSelect = document.getElementById("service");
     const voiceSelect = document.getElementById("voice");
     const player = document.getElementById("player");
     const progressBar = document.getElementById("progressBar");
@@ -395,6 +400,64 @@
 
     refreshHistoryBtn.onclick = loadHistory;
 
+    // Update voice options based on selected service
+    serviceSelect.onchange = updateVoiceOptions;
+    voiceSelect.onchange = updateVoiceOptions;
+
+    function updateVoiceOptions() {
+      const selectedService = serviceSelect.value;
+      const currentVoice = voiceSelect.value;
+
+      // Clear current options
+      voiceSelect.innerHTML = '';
+
+      if (selectedService === 'openai') {
+        const openaiVoices = [
+          { value: 'shimmer', label: 'Shimmer (Sky)' },
+          { value: 'onyx', label: 'Onyx (Ember)' },
+          { value: 'nova', label: 'Nova (Cove)' },
+          { value: 'echo', label: 'Echo (Breeze)' },
+          { value: 'fable', label: 'Fable (Juniper)' }
+        ];
+
+        openaiVoices.forEach(voice => {
+          const option = document.createElement('option');
+          option.value = voice.value;
+          option.textContent = voice.label;
+          if (voice.value === currentVoice) {
+            option.selected = true;
+          }
+          voiceSelect.appendChild(option);
+        });
+      } else if (selectedService === 'polly') {
+        const pollyVoices = [
+          { value: 'joanna', label: 'Joanna (Female, US)' },
+          { value: 'matthew', label: 'Matthew (Male, US)' },
+          { value: 'ivy', label: 'Ivy (Female, Child)' },
+          { value: 'justin', label: 'Justin (Male, Child)' },
+          { value: 'kendra', label: 'Kendra (Female, US)' },
+          { value: 'kevin', label: 'Kevin (Male, Child)' },
+          { value: 'salli', label: 'Salli (Female, US)' },
+          { value: 'kimberly', label: 'Kimberly (Female, US)' },
+          { value: 'joey', label: 'Joey (Male, US)' },
+          { value: 'emma', label: 'Emma (Female, British)' }
+        ];
+
+        pollyVoices.forEach(voice => {
+          const option = document.createElement('option');
+          option.value = voice.value;
+          option.textContent = voice.label;
+          if (voice.value === currentVoice) {
+            option.selected = true;
+          }
+          voiceSelect.appendChild(option);
+        });
+      }
+    }
+
+    // Initialize voice options
+    updateVoiceOptions();
+
     async function loadHistory() {
       try {
         const response = await fetch('/api/requests');
@@ -421,6 +484,7 @@
             </div>
           </div>
           <div class="request-details">
+            <span>Service: ${request.service === 'openai' ? 'OpenAI TTS' : 'AWS Polly'}</span>
             <span>Voice: ${request.voice}</span>
             <span>Chunks: ${request.totalChunks}</span>
             <span>Duration: ${formatTime(request.totalDuration)}</span>
@@ -462,6 +526,7 @@
 
     readBtn.onclick = () => {
       const articleUrl = urlInput.value.trim();
+      const selectedService = serviceSelect.value;
       const selectedVoice = voiceSelect.value;
 
       if (!articleUrl) {
@@ -491,6 +556,7 @@
       // Build streaming URL with query params
       const streamUrl = new URL("/stream-read", window.location.origin);
       streamUrl.searchParams.set("url", articleUrl);
+      streamUrl.searchParams.set("service", selectedService);
       streamUrl.searchParams.set("voice", selectedVoice);
 
       eventSource = new EventSource(streamUrl);

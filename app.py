@@ -18,6 +18,8 @@ from pydub import AudioSegment
 from flask_cors import CORS
 import glob
 from datetime import datetime
+import boto3
+from botocore.exceptions import ClientError
 
 app = Flask(__name__)
 CORS(app)  # allow cross-origin if frontend is hosted separately
@@ -32,6 +34,26 @@ audio_requests = {}
 # secrets = load_secrets()
 # openai.api_key = secrets["api-keys"]["open-api"]
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# AWS Polly configuration
+aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+aws_region = os.getenv("AWS_REGION", "us-east-1")
+
+# Initialize AWS Polly client if credentials are available
+polly_client = None
+if aws_access_key_id and aws_secret_access_key:
+    try:
+        polly_client = boto3.client(
+            "polly",
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            region_name=aws_region,
+        )
+        print("[DEBUG] AWS Polly client initialized successfully")
+    except Exception as e:
+        print(f"[WARNING] Failed to initialize AWS Polly client: {e}")
+
 os.makedirs("static", exist_ok=True)
 
 
@@ -50,6 +72,7 @@ def get_requests():
                 "sessionId": session_id,
                 "url": request_data["url"],
                 "voice": request_data["voice"],
+                "service": request_data["service"],
                 "timestamp": request_data["timestamp"],
                 "totalChunks": request_data["totalChunks"],
                 "totalDuration": request_data["totalDuration"],
@@ -105,22 +128,86 @@ def cleanup_old_audio_files():
         print(f"[WARNING] Error during cleanup: {e}")
 
 
+def synthesize_with_openai(text, voice):
+    """Synthesize speech using OpenAI TTS"""
+    try:
+        response = openai.audio.speech.create(model="tts-1", voice=voice, input=text)
+        return response.content
+    except Exception as e:
+        print(f"[ERROR] OpenAI TTS failed: {e}")
+        raise
+
+
+def synthesize_with_polly(text, voice):
+    """Synthesize speech using AWS Polly"""
+    if not polly_client:
+        raise Exception("AWS Polly client not initialized")
+
+    try:
+        # Map frontend voice names to Polly voice IDs
+        voice_mapping = {
+            "joanna": "Joanna",
+            "matthew": "Matthew",
+            "ivy": "Ivy",
+            "justin": "Justin",
+            "kendra": "Kendra",
+            "kevin": "Kevin",
+            "salli": "Salli",
+            "kimberly": "Kimberly",
+            "joey": "Joey",
+            "emma": "Emma",
+        }
+
+        polly_voice = voice_mapping.get(voice, "Joanna")
+
+        response = polly_client.synthesize_speech(
+            Text=text,
+            OutputFormat="mp3",
+            VoiceId=polly_voice,
+            Engine="neural",  # Use neural engine for better quality
+        )
+
+        return response["AudioStream"].read()
+    except ClientError as e:
+        print(f"[ERROR] AWS Polly TTS failed: {e}")
+        raise Exception(f"AWS Polly error: {e}")
+    except Exception as e:
+        print(f"[ERROR] AWS Polly TTS failed: {e}")
+        raise
+
+
 @app.route("/stream-read", methods=["GET"])
 def stream_read():
     url = request.args.get("url")
     voice = request.args.get("voice", "shimmer")
+    service = request.args.get("service", "openai")  # "openai" or "polly"
 
     print("[DEBUG] Received request for URL:", url)
     print("[DEBUG] Selected voice:", voice)
+    print("[DEBUG] Selected service:", service)
 
     if not url:
         print("[ERROR] No URL provided")
         return Response("No URL provided", status=400)
 
+    # Validate service selection
+    if service not in ["openai", "polly"]:
+        print("[ERROR] Invalid service selected")
+        return Response("Invalid service selected", status=400)
+
+    # Check if service is available
+    if service == "openai" and not openai.api_key:
+        print("[ERROR] OpenAI API key not configured")
+        return Response("OpenAI service not configured", status=500)
+
+    if service == "polly" and not polly_client:
+        print("[ERROR] AWS Polly not configured")
+        return Response("AWS Polly service not configured", status=500)
+
     # Clean up old files before starting
     cleanup_old_audio_files()
 
-    def generate(voice):
+    def generate(voice, service):
         chunk_files = []
         session_id = uuid.uuid4().hex
         combined_audio_path = f"static/combined_{session_id}.mp3"
@@ -129,6 +216,7 @@ def stream_read():
         audio_requests[session_id] = {
             "url": url,
             "voice": voice,
+            "service": service,
             "timestamp": datetime.now().isoformat(),
             "totalChunks": 0,
             "totalDuration": 0,
@@ -145,20 +233,45 @@ def stream_read():
             chunks = chunk_text(text)
             print(f"[DEBUG] Text split into {len(chunks)} chunk(s).")
 
-            allowed_voices = {"shimmer", "onyx", "nova", "echo", "fable"}
-            if voice not in allowed_voices:
-                print(f"[WARNING] Invalid voice '{voice}', defaulting to shimmer.")
-                voice = "shimmer"
+            # Validate voice based on service
+            if service == "openai":
+                allowed_voices = {"shimmer", "onyx", "nova", "echo", "fable"}
+                if voice not in allowed_voices:
+                    print(
+                        f"[WARNING] Invalid OpenAI voice '{voice}', defaulting to shimmer."
+                    )
+                    voice = "shimmer"
+            elif service == "polly":
+                allowed_voices = {
+                    "joanna",
+                    "matthew",
+                    "ivy",
+                    "justin",
+                    "kendra",
+                    "kevin",
+                    "salli",
+                    "kimberly",
+                    "joey",
+                    "emma",
+                }
+                if voice not in allowed_voices:
+                    print(
+                        f"[WARNING] Invalid Polly voice '{voice}', defaulting to joanna."
+                    )
+                    voice = "joanna"
 
             for idx, chunk in enumerate(chunks):
-                print(f"[DEBUG] Synthesizing chunk {idx + 1}/{len(chunks)}...")
-
-                # Call OpenAI TTS API
-                response = openai.audio.speech.create(
-                    model="tts-1", voice=voice, input=chunk
+                print(
+                    f"[DEBUG] Synthesizing chunk {idx + 1}/{len(chunks)} with {service}..."
                 )
+
+                # Synthesize speech based on selected service
+                if service == "openai":
+                    audio_bytes = synthesize_with_openai(chunk, voice)
+                else:  # polly
+                    audio_bytes = synthesize_with_polly(chunk, voice)
+
                 print("[DEBUG] TTS request complete, saving audio...")
-                audio_bytes = response.content
                 audio_segment = AudioSegment.from_file(
                     BytesIO(audio_bytes), format="mp3"
                 )
@@ -167,7 +280,7 @@ def stream_read():
                 # Save individual chunk to file
                 chunk_filename = f"static/chunk_{session_id}_{idx}.mp3"
                 with open(chunk_filename, "wb") as f:
-                    f.write(response.content)
+                    f.write(audio_bytes)
 
                 chunk_files.append(chunk_filename)
 
@@ -223,7 +336,9 @@ def stream_read():
             error_data = {"error": str(e)}
             yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
 
-    return Response(stream_with_context(generate(voice)), mimetype="text/event-stream")
+    return Response(
+        stream_with_context(generate(voice, service)), mimetype="text/event-stream"
+    )
 
 
 if __name__ == "__main__":
