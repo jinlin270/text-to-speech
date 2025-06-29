@@ -501,6 +501,16 @@
       background: #218838;
     }
 
+    .continue-btn {
+      background: #17a2b8;
+      padding: 8px 16px;
+      font-size: 12px;
+    }
+
+    .continue-btn:hover {
+      background: #138496;
+    }
+
     .request-audio {
       margin-top: 10px;
       display: none;
@@ -668,13 +678,13 @@
           <option value="openai">OpenAI TTS</option>
           <option value="polly">AWS Polly (Cheaper)</option>
         </select>
-        <select id="voice">
-          <option value="shimmer">Shimmer (Sky)</option>
-          <option value="onyx">Onyx (Ember)</option>
-          <option value="nova">Nova (Cove)</option>
-          <option value="echo">Echo (Breeze)</option>
-          <option value="fable">Fable (Juniper)</option>
-        </select>
+  <select id="voice">
+    <option value="shimmer">Shimmer (Sky)</option>
+    <option value="onyx">Onyx (Ember)</option>
+    <option value="nova">Nova (Cove)</option>
+    <option value="echo">Echo (Breeze)</option>
+    <option value="fable">Fable (Juniper)</option>
+  </select>
         <button id="readBtn">Read Article</button>
         <button id="stopBtn" class="stop-btn" style="display: none;">Stop</button>
       </div>
@@ -710,10 +720,10 @@
         <button id="nextChunkBtn" class="nav-btn" disabled>→</button>
       </div>
 
-      <div id="progressContainer">
+  <div id="progressContainer">
         <div id="bufferedBar"></div>
-        <div id="progressBar"></div>
-      </div>
+    <div id="progressBar"></div>
+  </div>
 
       <div id="timeDisplay">Ready to start</div>
       <div id="chunkInfo" class="chunk-info"></div>
@@ -1089,6 +1099,11 @@
               <button class="play-btn" onclick="playRequestAudio('${request.sessionId}', '${request.combinedAudioUrl}')">
                 Play Audio
               </button>
+              ${request.status === 'stopped' || request.status === 'disconnected' ?
+            `<button class="continue-btn" onclick="continueGeneration('${request.sessionId}')">
+                  Continue Generation
+                </button>` : ''
+          }
             </div>
             <div id="audio-${request.sessionId}" class="request-audio">
               <audio controls src="${request.combinedAudioUrl}"></audio>
@@ -1261,14 +1276,14 @@
 
         // Try to parse error data if available
         if (event.data) {
-          try {
-            const errorData = JSON.parse(event.data);
+        try {
+          const errorData = JSON.parse(event.data);
             console.error("Streaming error:", errorData);
-            alert("Error: " + errorData.error);
+          alert("Error: " + errorData.error);
           } catch (e) {
             console.error("Failed to parse error data:", event.data);
             alert("A streaming error occurred. Check console for details.");
-          }
+        }
         } else {
           console.error("EventSource error without data");
           alert("A streaming error occurred. Please check your internet connection and try again.");
@@ -1312,7 +1327,7 @@
 
       // Reset state
       isStreaming = false;
-      isPlaying = false;
+          isPlaying = false;
       shouldAutoPlay = false;
       audioQueue = [];
       currentChunkIndex = 0;
@@ -1323,7 +1338,7 @@
       // Reset UI
       resetButtonState();
       updateStatus("loading", "Request cancelled");
-      updateDisplay();
+          updateDisplay();
       updateNavigationControls();
       updateChunkInfo();
       showChunkUI(); // Reset to chunk UI state
@@ -1363,19 +1378,19 @@
     function playCurrentChunk() {
       if (currentChunkIndex >= audioQueue.length) {
         isPlaying = false;
-        return;
-      }
+          return;
+        }
 
       const currentChunk = audioQueue[currentChunkIndex];
       player.src = currentChunk.url;
-      isPlaying = true;
+        isPlaying = true;
 
       // Auto-play if user had started playing before
       if (shouldAutoPlay) {
         player.play().catch(e => console.log("Auto-play prevented:", e));
       }
 
-      updateDisplay();
+        updateDisplay();
       updateNavigationControls();
     }
 
@@ -1497,9 +1512,9 @@
     };
 
     // Audio event handlers
-    player.ontimeupdate = () => {
-      updateDisplay();
-    };
+      player.ontimeupdate = () => {
+        updateDisplay();
+      };
 
     player.onloadedmetadata = () => {
       updateDisplay();
@@ -1507,9 +1522,9 @@
 
     player.onprogress = () => {
       updateBufferedProgress();
-    };
+      };
 
-    player.onended = () => {
+      player.onended = () => {
       // When current chunk ends, play the next one if available
       if (isStreaming && currentChunkIndex < audioQueue.length - 1) {
         playNextChunk();
@@ -1538,16 +1553,16 @@
 
     player.onpause = () => {
       isPlaying = false;
-    };
+      };
 
-    function updateDisplay() {
+      function updateDisplay() {
       if (!player.duration || isNaN(player.duration)) {
         timeDisplay.textContent = "Ready to start";
         progressBar.style.width = "0%";
         return;
       }
 
-      const currentTime = player.currentTime || 0;
+        const currentTime = player.currentTime || 0;
       const duration = player.duration || 0;
 
       // If we're streaming, calculate total elapsed time (completed chunks + current chunk progress)
@@ -1590,12 +1605,12 @@
       }
     }
 
-    function formatTime(seconds) {
+        function formatTime(seconds) {
       if (isNaN(seconds)) return "0:00";
-      const mins = Math.floor(seconds / 60);
-      const secs = Math.floor(seconds % 60);
-      return `${mins}:${secs.toString().padStart(2, "0")}`;
-    }
+          const mins = Math.floor(seconds / 60);
+          const secs = Math.floor(seconds % 60);
+          return `${mins}:${secs.toString().padStart(2, "0")}`;
+        }
 
     function hideChunkUI() {
       // Hide chunk-related UI elements
@@ -1814,6 +1829,187 @@
           console.error('Session test failed:', error);
           alert('Session test failed: ' + error.message);
         });
+    }
+
+    async function continueGeneration(sessionId) {
+      try {
+        console.log('Starting continuation for session:', sessionId);
+
+        // Get continuation info from backend
+        const response = await fetch('/api/continue-generation', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ session_id: sessionId })
+        });
+
+        const result = await response.json();
+
+        if (!result.success) {
+          alert('Failed to continue generation: ' + result.message);
+          return;
+        }
+
+        console.log('Continuation info:', result);
+
+        // Show confirmation dialog with continuation details
+        const confirmed = confirm(
+          `Continue generation for this request?\n\n` +
+          `Completed chunks: ${result.completed_chunks}\n` +
+          `Completed duration: ${formatTime(result.completed_duration)}\n` +
+          `Completed cost: $${result.completed_cost.toFixed(4)}\n` +
+          `Voice: ${result.voice}\n` +
+          `Service: ${result.service === 'openai' ? 'OpenAI TTS' : 'AWS Polly'}\n\n` +
+          `This will continue generating the remaining audio chunks.`
+        );
+
+        if (!confirmed) {
+          return;
+        }
+
+        // Start continuation streaming
+        startContinuationStreaming(sessionId, result.voice, result.service);
+
+      } catch (error) {
+        console.error('Error starting continuation:', error);
+        alert('Error starting continuation: ' + error.message);
+      }
+    }
+
+    function startContinuationStreaming(sessionId, voice, service) {
+      // Reset state for continuation
+      isStreaming = false;
+      totalDuration = 0;
+      currentSessionId = sessionId;
+      audioQueue = [];
+      currentChunkIndex = 0;
+      isPlaying = false;
+      shouldAutoPlay = false;
+      playedDuration = 0;
+      combinedAudioUrl = null;
+      isTransitioningToFullAudio = false;
+      player.src = "";
+      fullAudioContainer.classList.remove("show");
+      showChunkUI(); // Show chunk UI for continuation
+      updateDisplay();
+      updateNavigationControls();
+      updateStatus("loading", "Continuing generation...");
+
+      // Show stop button and hide read button
+      readBtn.style.display = "none";
+      stopBtn.style.display = "inline-block";
+      readBtn.disabled = true;
+      stopBtn.disabled = false;
+
+      // Build streaming URL for continuation
+      const streamUrl = new URL('/stream-continue', window.location.origin);
+      streamUrl.searchParams.set('session_id', sessionId);
+      streamUrl.searchParams.set('voice', voice);
+      streamUrl.searchParams.set('service', service);
+
+      eventSource = new EventSource(streamUrl);
+
+      eventSource.onopen = () => {
+        console.log("Continuation streaming connection opened");
+        updateStatus("loading", "Continuing audio generation...");
+      };
+
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.audioUrl) {
+          // Add the new chunk to our queue
+          audioQueue.push({
+            url: data.audioUrl,
+            duration: data.chunkDuration,
+            chunkIndex: data.chunkIndex,
+            totalChunks: data.totalChunks,
+            isContinuation: data.isContinuation
+          });
+
+          currentSessionId = data.sessionId;
+          isStreaming = true;
+          totalDuration = data.totalDuration;
+
+          // If this is the first chunk, start playing
+          if (audioQueue.length === 1) {
+            playCurrentChunk();
+          }
+
+          updateDisplay();
+          updateNavigationControls();
+          updateStatus("playing", `Continuing chunk ${data.chunkIndex + 1} of ${data.totalChunks}`);
+          updateChunkInfo(data.chunkIndex + 1, data.totalChunks, data.chunkDuration);
+        }
+      };
+
+      eventSource.addEventListener("end", () => {
+        console.log("Continuation streaming ended");
+        eventSource.close();
+        resetButtonState();
+        isStreaming = false;
+        updateStatus("complete", "Continuation complete!");
+        updateChunkInfo();
+
+        // Create combined audio URL and show full audio player
+        if (audioQueue.length > 0) {
+          combinedAudioUrl = `/static/combined_${currentSessionId}.mp3`;
+          showFullAudio();
+
+          // If currently playing the last chunk, transition to full audio
+          if (isPlaying && currentChunkIndex === audioQueue.length - 1) {
+            transitionToFullAudio();
+          }
+
+          // Hide chunk-related UI elements
+          hideChunkUI();
+        }
+
+        // Refresh history and usage to show the updated request
+        loadHistory();
+        loadUsage();
+      });
+
+      eventSource.addEventListener("error", (event) => {
+        console.log("Continuation EventSource error event:", event);
+
+        // Try to parse error data if available
+        if (event.data) {
+          try {
+            const errorData = JSON.parse(event.data);
+            console.error("Continuation streaming error:", errorData);
+            alert("Error: " + errorData.error);
+          } catch (e) {
+            console.error("Failed to parse error data:", event.data);
+            alert("A continuation streaming error occurred. Check console for details.");
+          }
+        } else {
+          console.error("Continuation EventSource error without data");
+          alert("A continuation streaming error occurred. Please check your internet connection and try again.");
+        }
+
+        eventSource.close();
+        resetButtonState();
+        updateStatus("loading", "Continuation error occurred");
+      });
+
+      eventSource.addEventListener("stop", (event) => {
+        console.log("Continuation streaming stopped by server");
+        eventSource.close();
+        resetButtonState();
+        updateStatus("loading", "Continuation stopped by user request");
+
+        // Stop audio playback
+        if (player.src) {
+          player.pause();
+          player.src = "";
+        }
+
+        // Refresh history to show the partial continuation
+        loadHistory();
+        loadUsage();
+      });
     }
   </script>
 </body>

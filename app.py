@@ -26,6 +26,7 @@ import secrets
 import PyPDF2
 import base64
 
+openai.api_key = os.getenv("OPENAI_API_KEY")
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 CORS(app)  # allow cross-origin if frontend is hosted separately
@@ -64,7 +65,6 @@ LOGIN_TIMEOUT = 300  # 5 minutes
 #     return secrets
 # secrets = load_secrets()
 # openai.api_key = secrets["api-keys"]["open-api"]
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # AWS Polly configuration
 aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
@@ -615,14 +615,14 @@ def validate_voice_for_service(voice, service):
     return voice
 
 
-def check_usage_and_initialize_request(text, service, voice, source_url):
+def check_usage_and_initialize_request(text, service, voice, source_type):
     """Check usage limits and initialize request data
 
     Args:
         text (str): Text to be processed
         service (str): TTS service to use
         voice (str): Voice to use
-        source_url (str): Source identifier for the request
+        source_type (str): Source identifier for the request
 
     Returns:
         tuple: (text_chunks, session_id)
@@ -645,7 +645,7 @@ def check_usage_and_initialize_request(text, service, voice, source_url):
     # Initialize request data
     session_id = uuid.uuid4().hex
     audio_requests[session_id] = {
-        "url": source_url,
+        "url": source_type,
         "voice": voice,
         "service": service,
         "timestamp": datetime.now().isoformat(),
@@ -653,6 +653,7 @@ def check_usage_and_initialize_request(text, service, voice, source_url):
         "totalDuration": 0,
         "cost": 0.0,
         "status": "processing",
+        "source_type": source_type,
     }
 
     return chunks, session_id
@@ -720,8 +721,10 @@ def generate_streaming_audio(source_type, voice, service, url=None):
 
         # Check usage and initialize request
         chunks, session_id = check_usage_and_initialize_request(
-            text, service, voice, source_url
+            text, service, voice, source_type
         )
+        # Store the actual url for reference
+        audio_requests[session_id]["url"] = source_url
 
         # Register this session for stop functionality
         active_streaming_sessions[session_id] = {
@@ -1199,6 +1202,111 @@ def get_active_sessions():
     except Exception as e:
         print(f"[ERROR] Error getting active sessions: {e}")
         return jsonify({"success": False, "message": f"Error: {str(e)}"}), 500
+
+
+@app.route("/api/continue-generation", methods=["POST"])
+def continue_generation():
+    data = request.get_json()
+    session_id = data.get("session_id")
+    if not session_id or session_id not in audio_requests:
+        return jsonify({"success": False, "message": "Session not found"}), 404
+    request_data = audio_requests[session_id]
+    status = request_data.get("status", "unknown")
+    if status not in ["stopped", "disconnected"]:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "message": "Can only continue from stopped or disconnected requests",
+                }
+            ),
+            400,
+        )
+    return jsonify(
+        {
+            "success": True,
+            "session_id": session_id,
+            "url": request_data["url"],
+            "voice": request_data["voice"],
+            "service": request_data["service"],
+            "completed_chunks": request_data["totalChunks"],
+            "completed_duration": request_data["totalDuration"],
+            "completed_cost": request_data["cost"],
+        }
+    )
+
+
+@app.route("/stream-continue", methods=["GET"])
+def stream_continue():
+    session_id = request.args.get("session_id")
+    voice = request.args.get("voice", "shimmer")
+    service = request.args.get("service", "openai")
+    if not session_id or session_id not in audio_requests:
+        return Response("Session not found", status=404)
+    request_data = audio_requests[session_id]
+    status = request_data.get("status", "unknown")
+    if status not in ["stopped", "disconnected"]:
+        return Response("Cannot continue this session", status=400)
+    return Response(
+        stream_with_context(
+            generate_continuation_streaming(session_id, voice, service)
+        ),
+        mimetype="text/event-stream",
+    )
+
+
+def generate_continuation_streaming(session_id, voice, service):
+    try:
+        request_data = audio_requests[session_id]
+        source_type = request_data.get("source_type", "url")
+        if source_type == "url":
+            text, source_url = get_text_from_source("url", request_data["url"])
+        else:
+            text, source_url = get_text_from_source("pdf")
+        chunks = chunk_text(text)
+        completed_chunks = request_data["totalChunks"]
+        existing_chunk_files = []
+        for i in range(completed_chunks):
+            chunk_file = f"static/chunk_{session_id}_{i}.mp3"
+            if os.path.exists(chunk_file):
+                existing_chunk_files.append(chunk_file)
+        total_cost = request_data["cost"]
+        total_duration_so_far = request_data["totalDuration"]
+        for idx, chunk in enumerate(chunks[completed_chunks:]):
+            chunk_index = completed_chunks + idx
+            chunk_cost = calculate_cost(service, len(chunk))
+            total_cost += chunk_cost
+            if service == "openai":
+                audio_bytes = synthesize_with_openai(chunk, voice)
+            else:
+                audio_bytes = synthesize_with_polly(chunk, voice)
+            audio_segment = AudioSegment.from_file(BytesIO(audio_bytes), format="mp3")
+            duration_sec = audio_segment.duration_seconds
+            chunk_filename = f"static/chunk_{session_id}_{chunk_index}.mp3"
+            with open(chunk_filename, "wb") as f:
+                f.write(audio_bytes)
+            existing_chunk_files.append(chunk_filename)
+            total_duration_so_far += duration_sec
+            data = {
+                "audioUrl": "/" + chunk_filename,
+                "chunkDuration": duration_sec,
+                "totalDuration": total_duration_so_far,
+                "chunkIndex": chunk_index,
+                "totalChunks": len(chunks),
+                "sessionId": session_id,
+                "isContinuation": True,
+            }
+            yield f"data: {json.dumps(data)}\n\n"
+            time.sleep(0.5)
+        combine_audio_chunks(existing_chunk_files, f"static/combined_{session_id}.mp3")
+        audio_requests[session_id]["totalChunks"] = len(existing_chunk_files)
+        audio_requests[session_id]["totalDuration"] = total_duration_so_far
+        audio_requests[session_id]["cost"] = total_cost
+        audio_requests[session_id]["status"] = "completed"
+        yield "event: end\ndata: {}\n\n"
+    except Exception as e:
+        error_data = {"error": str(e)}
+        yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
 
 
 if __name__ == "__main__":
