@@ -32,7 +32,7 @@ CORS(app)  # allow cross-origin if frontend is hosted separately
 audio_requests = {}
 
 # Usage tracking
-USAGE_LIMIT = float(os.getenv("USAGE_LIMIT", "0.01"))  # Configurable usage limit
+USAGE_LIMIT = float(os.getenv("USAGE_LIMIT", "10"))  # Configurable usage limit
 current_usage = 0.0  # Track current usage in dollars
 
 # Cost per character (in dollars)
